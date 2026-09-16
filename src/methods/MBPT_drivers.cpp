@@ -116,6 +116,9 @@ inline void ensure_checkpoint(std::shared_ptr<mf::MF> mf, std::string const& out
  *  - prefix: "bdft.mbpt" Prefix used when output is not provided.
  *  - restart: "false" Restart from a previous bdft.scf calculation.
  *  - t_prescreen_thresh: "0.0" Threshold for prescreening in time (GF2 only for now)
+ *  - pi_regularization: "none" Projection enforcing Pi_00(q=0,iw) = 0 before the Dyson solve for W.
+ *    "none" (default), "dynamic" (skips iw = 0), "insulator" (projects iw = 0 too), or
+ *    "extrapolate" (iw = 0 shift taken from the iw -> 0 limit of the iw != 0 shifts).
  */
 template<typename eri_t>
 void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
@@ -203,7 +206,8 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
     } else {
       iter_solver = nullptr;
     }
-    solvers::scr_coulomb_t scr_eri(&ft, screen_type, div_treatment);
+    solvers::scr_coulomb_t scr_eri(&ft, screen_type, div_treatment, 
+      io::get_value_with_default<std::string>(pt,"pi_regularization", "none"));
     solvers::gw_t gw(&ft, div_treatment, output);
     if (screen_type.substr(0,8)=="gw_edmft") {
 
@@ -283,7 +287,8 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
                iter_solver.get(), niter, restart, conv_thr, const_mu,
                greens_func_source, greens_func_iteration, eval_thermodynamics);
     } else {
-      solvers::scr_coulomb_t scr_eri(&ft, "rpa", div_treatment);
+      solvers::scr_coulomb_t scr_eri(&ft, "rpa", div_treatment,
+        io::get_value_with_default<std::string>(pt, "pi_regularization", "none"));
       scf_loop(mb_state, dyson, eri, ft, mb_solver_t(&hf, &gf2, &scr_eri),
                iter_solver.get(), niter, restart, conv_thr, const_mu,
                greens_func_source, greens_func_iteration, eval_thermodynamics);
@@ -331,7 +336,8 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
     } else {
       iter_solver = nullptr;
     }
-    solvers::scr_coulomb_t scr_eri(&ft, "rpa", div_treatment);
+    solvers::scr_coulomb_t scr_eri(&ft, "rpa", div_treatment,
+        io::get_value_with_default<std::string>(pt, "pi_regularization", "none"));
     solvers::gw_t gw(&ft, div_treatment, output);
     MBState mb_state(mpi, ft, output);
     qp_scf_loop(mb_state, eri, ft, qp_params, mb_solver_t(&hf,&gw,&scr_eri), iter_solver.get(),
@@ -354,7 +360,8 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
     } else {
       iter_solver = nullptr;
     }
-    solvers::scr_coulomb_t scr_eri(&ft, "rpa", div_treatment);
+    solvers::scr_coulomb_t scr_eri(&ft, "rpa", div_treatment,
+        io::get_value_with_default<std::string>(pt, "pi_regularization", "none"));
     solvers::gw_t gw(&ft, div_treatment, output);
     MBState mb_state(mpi, ft, output);
     qp_scf_loop(mb_state, eri, ft, qp_params, mb_solver_t(&hf,&gw,&scr_eri), iter_solver.get(),
@@ -435,7 +442,8 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt,
     } else {
       iter_solver = nullptr;
     }
-    solvers::scr_coulomb_t scr_eri(&ft, screen_type, div_treatment);
+    solvers::scr_coulomb_t scr_eri(&ft, screen_type, div_treatment, 
+      io::get_value_with_default<std::string>(pt,"pi_regularization", "none"));
     solvers::gw_t gw(&ft, div_treatment, output);
     MBState mb_state(ft, output, mf, projector_ksIai, band_window, kpts_crys, trans_home_cell, false);
     if (local_polarizabilities) {
@@ -553,6 +561,8 @@ downfold_coulomb_impl(eri_t &eri, MBState&& mb_state, ptree const& pt,
     local_polarizabilities.reset();
   }
   embed_eri_t embed_eri(*mf, div_treatment, bare_div_treatment, "default");
+  embed_eri.set_pi_regularization(
+      io::get_value_with_default<std::string>(pt, "pi_regularization", "none"));
   return (output_in_tau)?
     embed_eri.compute_downfolded_coulomb_tensors<true>(
       eri, mb_state, screen_type, permut_symm, force_real, mb_state.ft, 
@@ -651,6 +661,8 @@ void downfolding_2e(eri_t &eri, ptree const& pt,
   }
 
   embed_eri_t embed_eri(*mf, div_treatment, bare_div_treatment, "default");
+  embed_eri.set_pi_regularization(
+      io::get_value_with_default<std::string>(pt, "pi_regularization", "none"));
 
   if (screen_type.substr(0, 8) == "gw_edmft") {
     embed_eri.downfolding_edmft(eri, mb_state, pt, screen_type);
@@ -716,6 +728,8 @@ void hf_downfold(eri_t &eri, ptree const& pt) {
 
   // Two-body Hamiltonian
   embed_eri_t embed_eri(*mf, "ignore_g0", hf_div_treatment, "model_static");
+  embed_eri.set_pi_regularization(
+      io::get_value_with_default<std::string>(pt, "pi_regularization", "none"));
   embed_eri.downfolding_crpa(eri, mb_state, pt, "bare", factorization_type,
                              io::get_value_with_default<double>(pt, "thresh", 1e-6));
 
@@ -790,6 +804,8 @@ void gw_downfold(eri_t &eri, ptree &pt) {
 
   // Two-body Hamiltonian
   embed_eri_t embed_eri(*mf, div_treatment, hf_div_treatment, "model_static");
+  embed_eri.set_pi_regularization(
+      io::get_value_with_default<std::string>(pt, "pi_regularization", "none"));
   embed_eri.downfolding_crpa(eri, mb_state, pt, "crpa", factorization_type,
                              io::get_value_with_default<double>(pt, "thresh", 1e-6));
 

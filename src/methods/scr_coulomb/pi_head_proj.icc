@@ -1,0 +1,211 @@
+#ifndef COQUI_PI_HEAD_PROJ_ICC
+#define COQUI_PI_HEAD_PROJ_ICC
+
+#include "configuration.hpp"
+#include "nda/nda.hpp"
+#include "nda/blas.hpp"
+#include "numerics/distributed_array/nda.hpp"
+
+#include "utilities/check.hpp"
+#include "IO/app_loggers.h"
+#include "mean_field/MF.hpp"
+#include "methods/ERI/detail/concepts.hpp"
+#include "methods/GW/g0_div_utils.hpp"
+
+namespace methods {
+namespace solvers {
+
+  namespace pi_head_tol {
+    /// |q|^2 below this identifies the zone center.
+    constexpr double gamma = 1e-10;
+    /// N(q) = |sigma(q)|^2 below this leaves the rank-one direction undefined.
+    constexpr double zero_norm = 1e-8;
+    /// max_n |Im dC| / max_n |Re dC| above this warns about a broken contraction.
+    constexpr double imag_warn = 1e-6;
+    /// "extrapolate": number of nu_n != 0 points (n = 1..extrap_npts) in the linear fit of
+    /// dC(i nu_n) in nu^2 whose intercept replaces dC(0). Four points and a straight line
+    /// were stable to 1e-4 on Si 9^3 (windows 4/6/8, degrees 1/2 agreed to 5.824 vs 5.825).
+    constexpr long extrap_npts = 4;
+  } // pi_head_tol
+
+  template<nda::MemoryArray Array_4D_t, typename communicator_t>
+  auto scr_coulomb_t::regularize_Pi_head(
+      memory::darray_t<Array_4D_t, communicator_t> &dPi_wqPQ,
+      THC_ERI auto &thc,
+      const nda::array<ComplexType, 2> &pi_head_wq)
+  -> nda::array<ComplexType, 1>
+  {
+    _Timer.start("PI_HEAD_PROJ");
+    utils::check(_pi_regularization != "none",
+                 "scr_coulomb_t::regularize_Pi_head: pi_regularization = \"none\", so no "
+                 "projection was requested, but the kernel was called anyway. Guard the "
+                 "call site instead of relying on this routine to no-op; as written it "
+                 "would silently behave like \"insulator\".");
+    utils::check(thc.has_basis_head(),
+                 "scr_coulomb_t::regularize_Pi_head: this THC object carries no G=0 head "
+                 "vectors (LS-THC fitted from Cholesky ERIs), so the polarization head cannot "
+                 "be projected. Rebuild the THC ERIs from the ISDF path, or set "
+                 "pi_regularization = \"none\".");
+
+    auto MF = thc.MF();
+    auto [nw, nqpts_ibz, NP_g, NQ_g] = dPi_wqPQ.global_shape();
+    utils::check(NP_g == thc.Np() and NQ_g == thc.Np(),
+                 "scr_coulomb_t::regularize_Pi_head: dPi_wqPQ has auxiliary dimensions "
+                 "({}, {}) but the THC object has Np = {}.", NP_g, NQ_g, thc.Np());
+    utils::check(pi_head_wq.shape(0) == nw and pi_head_wq.shape(1) == nqpts_ibz,
+                 "scr_coulomb_t::regularize_Pi_head: pi_head_wq has shape ({}, {}), "
+                 "expected ({}, {}).",
+                 pi_head_wq.shape(0), pi_head_wq.shape(1), nw, nqpts_ibz);
+
+    // Locate the Gamma point.
+    long iq_gamma = -1;
+    for (long q = 0; q < nqpts_ibz; ++q) {
+      auto qpt = MF->Qpts_ibz(q);
+      double n2 = qpt(0)*qpt(0) + qpt(1)*qpt(1) + qpt(2)*qpt(2);
+      if (n2 < pi_head_tol::gamma) { iq_gamma = q; break; }
+    }
+    utils::check(iq_gamma >= 0,
+                 "scr_coulomb_t::regularize_Pi_head: no q-point at the zone center was "
+                 "found in the irreducible list, so Pi_00(0,iw) cannot be extracted.");
+
+    // TODO What do we mean "no finite-q information"? 
+    if (nqpts_ibz == 1) {
+      app_log(1, "\n[ WARNING ] scr_coulomb_t::regularize_Pi_head: nqpts_ibz == 1, so the "
+                 "zone center is the only sampled momentum and the projection zeroes the "
+                 "polarization head outright. That is what charge conservation demands, "
+                 "but it leaves no finite-q information in the head channel.\n");
+    }
+
+    // dC(iw) = Pi_00(Gamma, iw), with the untouched sector set to zero.
+    nda::array<ComplexType, 1> dC_w(nw);
+    dC_w = pi_head_wq(nda::range::all, iq_gamma);
+    // Index 0 of the half bosonic mesh is nu = 0.
+    double static_excess = 0.0;   // "extrapolate" only: Pi_00(Gamma,0) minus the fitted violation
+    if (_pi_regularization == "dynamic") {
+      // remove the corrections at zero-frequency manually
+      dC_w(0) = ComplexType(0.0);
+    } else if (_pi_regularization == "extrapolate") {
+      // Pi_00(Gamma, 0) is the sum of two terms that "dynamic" and "insulator" cannot
+      // separate: the Ward-violating constant, which is a smooth even function of nu and
+      // is what the projection is meant to remove, and the physical static compressibility
+      // -dn/dmu, which by the Ward identity lives at n = 0 ONLY (the intraband response at
+      // q -> 0 vanishes identically for every nu_n != 0). The nu -> 0 limit of the n >= 1
+      // column therefore isolates the violation. Subtracting that, and only that, removes
+      // the spurious constant while keeping the thermal carriers of a finite-T insulator
+      // and the Thomas-Fermi head of a metal. A linear fit in nu^2 over the first
+      // extrap_npts nonzero frequencies is used; the column is smooth enough that window
+      // and degree do not matter at the 1e-4 level.
+      long K = pi_head_tol::extrap_npts;
+      auto wn_b = _ft->wn_mesh_b();
+      long nw_b = wn_b.shape(0);
+      long off = nw_b / 2;
+      utils::check(off + nw == nw_b and wn_b(off) == 0,
+                   "scr_coulomb_t::regularize_Pi_head: pi_regularization = \"extrapolate\" needs "
+                   "the frequency axis of Pi to be the positive half of the IAFT bosonic mesh "
+                   "(nw = {}, nw_b = {}, wn_b[nw_b/2] = {}). The fit in nu^2 cannot be set up.",
+                   nw, nw_b, wn_b(off));
+      utils::check(nw > K,
+                   "scr_coulomb_t::regularize_Pi_head: pi_regularization = \"extrapolate\" needs "
+                   "at least {} nonzero bosonic frequencies, but the half mesh has {}.", K, nw - 1);
+      double beta = _ft->beta();
+      double xm = 0.0, ym = 0.0;
+      for (long n = 1; n <= K; ++n) {
+        double nu = 6.283185307179586 * wn_b(off + n) / beta;
+        xm += nu * nu;
+        ym += dC_w(n).real();
+      }
+      xm /= K; ym /= K;
+      double sxx = 0.0, sxy = 0.0;
+      for (long n = 1; n <= K; ++n) {
+        double nu = 6.283185307179586 * wn_b(off + n) / beta;
+        sxx += (nu * nu - xm) * (nu * nu - xm);
+        sxy += (nu * nu - xm) * (dC_w(n).real() - ym);
+      }
+      double slope = (sxx > 0.0) ? sxy / sxx : 0.0;
+      double intercept = ym - slope * xm;
+      static_excess = dC_w(0).real() - intercept;
+      dC_w(0) = ComplexType(intercept, 0.0);
+    }
+
+    double re_max = 0.0, im_max = 0.0;
+    for (long w = 0; w < nw; ++w) {
+      re_max = std::max(re_max, std::abs(dC_w(w).real()));
+      im_max = std::max(im_max, std::abs(dC_w(w).imag()));
+    }
+    double head_scale = 0.0;
+    for (long w = 0; w < nw; ++w)
+      for (long q = 0; q < nqpts_ibz; ++q)
+        head_scale = std::max(head_scale, std::abs(pi_head_wq(w, q)));
+    // dC is one column of pi_head_wq, so re_max <= head_scale; using head_scale as the
+    // floor makes the test "is Im dC significant on the scale of the head itself?",
+    // which stays meaningful once the Gamma column has been driven to round-off.
+    if (im_max > pi_head_tol::imag_warn * std::max(re_max, head_scale)) {
+      app_log(1, "\n[ WARNING ] scr_coulomb_t::regularize_Pi_head: max_n |Im dC| = {:.4e} "
+                 "against max_n |Re dC| = {:.4e} and a head scale of {:.4e}. dC is real on "
+                 "the imaginary axis; a large imaginary part indicates a broken head "
+                 "contraction.\n",
+              im_max, re_max, head_scale);
+    }
+
+    // dC is real on the imaginary axis; taking the real part makes the rank-one update
+    // Hermitian by construction rather than by accident -- dPi_PQ = alpha D_P conj(D_Q)
+    // is Hermitian iff alpha is real. The imag_warn guard above is then a pure
+    // diagnostic, and it has already run on the unmodified values.
+    for (long w = 0; w < nw; ++w) dC_w(w) = ComplexType(dC_w(w).real(), 0.0);
+
+    app_log(2, "  Polarization head projection ({}):", _pi_regularization);
+    app_log(2, "    - Gamma at irreducible q index {}", iq_gamma);
+    app_log(2, "    - dC(i nu_1) = ({:.6e}, {:.6e})",
+            dC_w(std::min(1L, nw - 1)).real(), dC_w(std::min(1L, nw - 1)).imag());
+    if (_pi_regularization == "extrapolate") {
+      app_log(2, "    - nu = 0: Pi_00(Gamma,0) = {:.6e}, violation extrapolated from n = 1..{} = {:.6e},\n"
+                 "              static-only excess retained (thermal / Thomas-Fermi) = {:.6e}",
+              pi_head_wq(0, iq_gamma).real(), pi_head_tol::extrap_npts, dC_w(0).real(),
+              static_excess);
+    }
+
+    // Rank-one update, local to each (w, q, P, Q) block.
+    auto Bbar   = thc.basis_bar_head();
+    auto w_rng  = dPi_wqPQ.local_range(0);
+    auto q_rng  = dPi_wqPQ.local_range(1);
+    auto P_rng  = dPi_wqPQ.local_range(2);
+    auto Q_rng  = dPi_wqPQ.local_range(3);
+    auto Pi_loc = dPi_wqPQ.local();
+    auto Nq     = thc.basis_head_norm();        // |sigma(q)|^2, sigma = sum_P Bbar_P conj(B_P)
+
+    nda::array<ComplexType, 1> x(P_rng.size()), y(Q_rng.size());
+    for (auto [iq, q] : itertools::enumerate(q_rng)) {
+      utils::check(Nq(q) > pi_head_tol::zero_norm,
+                   "scr_coulomb_t::regularize_Pi_head: N(q={}) = {:.3e} is zero to "
+                   "numerical precision; the rank-one direction is undefined.", q, Nq(q));
+      // Direction: D = conj(Bbar). The Coulomb matrix is Z = zeta v zeta^dag with
+      // zeta_P(G=0) = conj(B_P), so a Pi-type object enters the Dyson equation through its
+      // plane-wave image zeta^dag Pi zeta, and the rank-one matrix whose image is the pure
+      // charge head is conj(Bbar) conj(Bbar)^dag / |sigma|^2 (Bbar is dual to B under the
+      // Hermitian product, sigma = sum_P Bbar_P conj(B_P) ~ 1). The transposed choice
+      // D = Bbar zeroes the transposed functional exactly but couples to the W head through
+      // |B^T Bbar|^2 ~ 1e-12, i.e. not at all -- see test "pi_head_z_coupling".
+      //
+      // nda::blas::gerc dispatches a C-layout matrix as gerc(alpha, y, x, transpose(m)),
+      // so for the C-ordered Pi block it computes A_PQ += alpha * conj(x_P) * y_Q -- NOT
+      // the Fortran A += alpha x y^H. To lay down alpha * conj(Bbar_P) Bbar_Q we pass
+      // x = y = Bbar. (Same convention as the gerc calls in embed_eri_t.cpp.)
+      x = Bbar(q, P_rng);
+      y = Bbar(q, Q_rng);
+      for (auto [iw, w] : itertools::enumerate(w_rng)) {
+        if (dC_w(w) == ComplexType(0.0)) continue;
+        auto A = Pi_loc(iw, iq, nda::ellipsis{});
+        nda::blas::gerc(-dC_w(w) / Nq(q), x, y, A);
+      }
+    }
+    dPi_wqPQ.communicator()->barrier();
+
+    _delta_C_w = dC_w;
+    _Timer.stop("PI_HEAD_PROJ");
+    return dC_w;
+  }
+
+} // solvers
+} // methods
+
+#endif //COQUI_PI_HEAD_PROJ_ICC

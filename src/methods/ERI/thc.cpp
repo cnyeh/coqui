@@ -393,8 +393,12 @@ void thc::save(h5::group& gh5, std::string format, memory::array<MEM,long,1> con
     if(mpi->comm.root()) {
       auto ri_h = nda::to_host(ri);
       nda::h5_write(gh5, "interpolating_points", ri_h, false);
-      nda::h5_write(gh5, "interpolating_vectors_G0", Z_head_qu, false);
-      nda::h5_write(gh5, "dual_interpolating_vectors_G0", Zbar_head_qu, false);
+      // Empty when the caller never evaluated the G=0 heads (the THC-from-Cholesky fit).
+      // Omit the datasets entirely rather than writing zeros
+      if (Z_head_qu.size() > 0 and Zbar_head_qu.size() > 0) {
+        nda::h5_write(gh5, "interpolating_vectors_G0", Z_head_qu, false);
+        nda::h5_write(gh5, "dual_interpolating_vectors_G0", Zbar_head_qu, false);
+      }
     }
     // V [ q, u, v ]
     math::nda::h5_write(gh5, "coulomb_matrix", V);

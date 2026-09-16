@@ -330,9 +330,13 @@ namespace methods {
         nda::h5_write(downfolded_model_grp, "Uloc_wabcd", U_wabcd, false);
         nda::h5_write(downfolded_model_grp, "eps_inv_head_wq", eps_inv_head_wq, false);
         nda::h5_write(downfolded_model_grp, "eps_inv_head_w", eps_inv_head_w, false);
-        nda::h5_write(downfolded_model_grp, "pi_head_wq", pi_head_wq, false);
+        // Empty when the THC object carries no head vectors; 
+        if (pi_head_wq.size() > 0)
+          nda::h5_write(downfolded_model_grp, "pi_head_wq", pi_head_wq, false);
         h5::h5_write(downfolded_model_grp, "permut_symm", permut_symm);
         h5::h5_write(downfolded_model_grp, "screening_type", screen_type);
+        // Whether W_loc was built from a projected polarization.
+        h5::h5_write(downfolded_model_grp, "pi_regularization", _pi_regularization);
         // Write q-dependent tensors if present
         if (q_dependent_output && V_qabcd_opt.has_value() && U_qwabcd_opt.has_value()) {
           nda::h5_write(downfolded_model_grp, "V_qabcd", V_qabcd_opt.value(), false);
@@ -905,11 +909,15 @@ namespace methods {
       nda::h5_write(iter_grp, "Vloc_abcd", V_abcd, false);
       nda::h5_write(iter_grp, "Uloc_wabcd", U_wabcd, false); // optional
       h5::h5_write(iter_grp, "screening_type", screen_type); // optional
+      // Whether W_loc was built from a projected polarization.
+      h5::h5_write(iter_grp, "pi_regularization", _pi_regularization);
       nda::h5_write(iter_grp, "Pi_dc_wabcd", sPi_dc_wabcd_new.local(), false); // optional
       h5::h5_write(iter_grp, "permut_symm", permut_symm);
       nda::h5_write(iter_grp, "eps_inv_head_wq", eps_inv_head_wq, false);
       nda::h5_write(iter_grp, "eps_inv_head_w", eps_inv_head_w, false);
-      nda::h5_write(iter_grp, "pi_head_wq", pi_head_wq, false);
+      // Empty when the THC object carries no head vectors; 
+      if (pi_head_wq.size() > 0)
+        nda::h5_write(iter_grp, "pi_head_wq", pi_head_wq, false);
     }
     mpi->comm.barrier();
     _Timer.stop("DF_WRITE");
@@ -1091,11 +1099,15 @@ namespace methods {
       nda::h5_write(iter_grp, "Vloc_abcd", V_abcd, false);
       nda::h5_write(iter_grp, "Uloc_wabcd", U_wabcd, false);
       h5::h5_write(iter_grp, "screening_type", screen_type);
+      // Whether W_loc was built from a projected polarization.
+      h5::h5_write(iter_grp, "pi_regularization", _pi_regularization);
       h5::h5_write(iter_grp, "permut_symm", permut_symm);
       nda::h5_write(iter_grp, "Pi_dc_wabcd", sPi_dc_wabcd_new.local(), false); // optional
       nda::h5_write(iter_grp, "eps_inv_head_wq", eps_inv_head_wq, false);
       nda::h5_write(iter_grp, "eps_inv_head_w", eps_inv_head_w, false);
-      nda::h5_write(iter_grp, "pi_head_wq", pi_head_wq, false);
+      // Empty when the THC object carries no head vectors
+      if (pi_head_wq.size() > 0)
+        nda::h5_write(iter_grp, "pi_head_wq", pi_head_wq, false);
     }
     mpi->comm.barrier();
 
@@ -1220,7 +1232,9 @@ namespace methods {
 
         nda::h5_write(sgrp, "crpa_eps_inv_head_wq", eps_inv_head_wq, false);
         nda::h5_write(sgrp, "crpa_eps_inv_head_w", eps_inv_head_w, false);
-        nda::h5_write(sgrp, "crpa_pi_head_wq", pi_head_wq, false);
+        // Empty when the THC object carries no head vectors.
+        if (pi_head_wq.size() > 0)
+          nda::h5_write(sgrp, "crpa_pi_head_wq", pi_head_wq, false);
 
       }
       _Timer.stop("DF_WRITE");
@@ -1251,7 +1265,9 @@ namespace methods {
 
         nda::h5_write(sgrp, "crpa_eps_inv_head_wq", eps_inv_head_wq, false);
         nda::h5_write(sgrp, "crpa_eps_inv_head_w", eps_inv_head_w, false);
-        nda::h5_write(sgrp, "crpa_pi_head_wq", pi_head_wq, false);
+        // Empty when the THC object carries no head vectors. 
+        if (pi_head_wq.size() > 0)
+          nda::h5_write(sgrp, "crpa_pi_head_wq", pi_head_wq, false);
       } else {
         auto grp = h5::group();
         write_cholesky_embed(grp,"Vq0",U_nab,true,true);
@@ -1421,15 +1437,17 @@ namespace methods {
     app_log(1, "Downfolding the Dynamic Screened Interactions\n"
                "-----------------------------------------\n");
     app_log(1, "  Screening = {}\n", screen_type);
-    solvers::scr_coulomb_t scr_coulomb(&ft, screen_type, _div_treatment);
+    solvers::scr_coulomb_t scr_coulomb(&ft, screen_type, _div_treatment, _pi_regularization);
     auto dPi_tqPQ = scr_coulomb.eval_Pi_qdep(mb_state, thc);
 
     auto[w_pgrid, w_bsize] = solvers::scr_coulomb_t::W_omega_proc_grid(mpi->comm.size(), _MF->nqpts_ibz(), ft.nw_b(), thc.Np());
     auto dW_wqPQ = scr_coulomb.tau_to_w(dPi_tqPQ, w_pgrid, w_bsize, true);
-    auto pi_head_wq = solvers::div_utils::head_from_prod_basis(dW_wqPQ, thc);
 
     // Dyson for screened interaction. Here we assume particle-hole symmetry
     scr_coulomb.dyson_W_in_place(dW_wqPQ, thc);
+    // Head of the polarization as it entered the Dyson solve (before any regularization),
+    // cached by dyson_W_in_place; hence read only after the call. 
+    auto pi_head_wq = scr_coulomb.pi_head_wq();
     auto [eps_inv_head_wq, eps_inv_head_w] = solvers::div_utils::eps_inv_head_w(dW_wqPQ, thc, *_MF, _div_treatment);
     auto W_wabcd = downfold_W(thc, dW_wqPQ, B_qIPab, eps_inv_head_w);
 
@@ -1461,16 +1479,18 @@ namespace methods {
 
     // Dynamical screened interactions
     app_log(1, "Downfolding the dynamic screened interactions with screening type = {}.\n", screen_type);
-    solvers::scr_coulomb_t scr_coulomb(&ft, screen_type, _div_treatment);
+    solvers::scr_coulomb_t scr_coulomb(&ft, screen_type, _div_treatment, _pi_regularization);
     auto dPi_tqPQ = scr_coulomb.eval_Pi_qdep(mb_state, thc);
 
     auto[w_pgrid, w_bsize] = solvers::scr_coulomb_t::W_omega_proc_grid(mpi->comm.size(), _MF->nqpts_ibz(), ft.nw_b(), thc.Np());
     auto dW_wqPQ = scr_coulomb.tau_to_w(dPi_tqPQ, w_pgrid, w_bsize, true);
-    auto pi_head_wq = solvers::div_utils::head_from_prod_basis(dW_wqPQ, thc);
 
     // Dyson for screened interaction
     // FIXME We assume particle-hole symmetry. This may not always be the case!
     scr_coulomb.dyson_W_in_place(dW_wqPQ, thc);
+    // Head of the polarization as it entered the Dyson solve (before any regularization),
+    // cached by dyson_W_in_place; hence read only after the call. 
+    auto pi_head_wq = scr_coulomb.pi_head_wq();
     auto [eps_inv_head_wq, eps_inv_head_w] = solvers::div_utils::eps_inv_head_w(dW_wqPQ, thc, *_MF, _div_treatment);
     auto W_wqabcd = downfold_Wq(thc, dW_wqPQ, B_qIPab);
 
@@ -1508,16 +1528,18 @@ namespace methods {
 
     // Dynamical screened interactions
     app_log(1, "Downfolding the dynamic screened interactions with screening type = {}.\n", screen_type);
-    solvers::scr_coulomb_t scr_coulomb(&ft, screen_type, _div_treatment);
+    solvers::scr_coulomb_t scr_coulomb(&ft, screen_type, _div_treatment, _pi_regularization);
     auto dPi_tqPQ = scr_coulomb.eval_Pi_qdep(mb_state, thc);
 
     auto[w_pgrid, w_bsize] = solvers::scr_coulomb_t::W_omega_proc_grid(mpi->comm.size(), _MF->nqpts_ibz(), ft.nw_b(), thc.Np());
     auto dW_wqPQ = scr_coulomb.tau_to_w(dPi_tqPQ, w_pgrid, w_bsize, true);
-    auto pi_head_wq = solvers::div_utils::head_from_prod_basis(dW_wqPQ, thc);
 
     // Dyson for screened interaction
     // FIXME We assume particle-hole symmetry. This may not always be the case!
     scr_coulomb.dyson_W_in_place(dW_wqPQ, thc);
+    // Head of the polarization as it entered the Dyson solve (before any regularization),
+    // cached by dyson_W_in_place; hence read only after the call. 
+    auto pi_head_wq = scr_coulomb.pi_head_wq();
     auto [eps_inv_head_wq, eps_inv_head_w] = solvers::div_utils::eps_inv_head_w(dW_wqPQ, thc, *_MF, _div_treatment);
 
     auto dV_qPQ = thc.dZ({1, 1, mpi->comm.size()});

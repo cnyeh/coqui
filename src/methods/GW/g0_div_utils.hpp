@@ -242,8 +242,18 @@ namespace methods {
         auto [nts, nqpts_ibz] = eps_inv_t.shape();
 
         if (thc.MF()->nqpts_ibz() == 1 and div_treatment != "ignore_g0") {
-          app_log(2, "eps_inv_head_t: nqpts_ibz == 1 while div_treatment != ignore. "
-                     "CoQui will take div_treatment = ignore_g0 anyway!");
+          app_log(2, "\n[ NOTE ] {}: this THC object carries only one q-point (the Gamma point), \n"
+                     "so every q->0 divergence correction that needs other q-points is skipped. \n"
+                     "The effective divergence treatment is \"ignore_g0\", not the requested \"{}\".\n",
+                     "eps_inv_head_t", div_treatment);
+          div_treatment = "ignore_g0";
+        }
+        if (not thc.has_basis_head() and div_treatment != "ignore_g0") {
+          app_log(1, "\n[ NOTE ] {}: this THC object carries no G=0 interpolating-vector "
+                     "heads (e.g. LS-THC fitted from Cholesky ERIs), so every q->0 divergence "
+                     "correction that needs them is skipped. The effective divergence "
+                     "treatment is \"ignore_g0\", not the requested \"{}\".\n",
+                  "eps_inv_head_t", div_treatment);
           div_treatment = "ignore_g0";
         }
 
@@ -284,8 +294,18 @@ namespace methods {
         auto eps_inv_w = eval_eps_inv_q(dW_wqPQ, thc, mf);
 
         if (thc.MF()->nqpts_ibz() == 1 and div_treatment != "ignore_g0") {
-          app_log(2, "eps_inv_head_w: nqpts_ibz == 1 while div_treatment != ignore. "
-                     "CoQui will take div_treatment = ignore_g0 anyway!");
+          app_log(2, "\n[ NOTE ] {}: this THC object carries only one q-point (the Gamma point), \n"
+                     "so every q->0 divergence correction that needs other q-points is skipped. \n"
+                     "The effective divergence treatment is \"ignore_g0\", not the requested \"{}\".\n",
+                     "eps_inv_head_t", div_treatment);
+          div_treatment = "ignore_g0";
+        }
+        if (not thc.has_basis_head() and div_treatment != "ignore_g0") {
+          app_log(1, "\n[ NOTE ] {}: this THC object carries no G=0 interpolating-vector "
+                     "heads (LS-THC fitted from Cholesky ERIs), so every q->0 divergence "
+                     "correction that needs them is skipped. The effective divergence "
+                     "treatment is \"ignore_g0\", not the requested \"{}\".\n",
+                  "eps_inv_head_w", div_treatment);
           div_treatment = "ignore_g0";
         }
 
@@ -322,6 +342,9 @@ namespace methods {
 
         nda::array<ComplexType, 2> eps_inv_x(nx, nqpts_ibz);
         eps_inv_x() = 0.0;
+        // Any operation requiring the G=0 head of the auxiliary basis is skipped
+        // when that head is absent. 
+        if (not thc.has_basis_head()) return eps_inv_x;
         nda::array<ComplexType, 1> Chi_bar_Q_conj(NQ_loc);
         nda::array<ComplexType, 1> buffer_P(NP_loc);
         const double fpi = 4.0*3.14159265358979323846;
@@ -363,6 +386,10 @@ namespace methods {
         auto [nts, nqpts_ibz, NP, NQ] = dM_tqPQ.global_shape();
 
         nda::array<ComplexType, 2> m_t(nts, nqpts_ibz);
+        m_t() = 0.0;
+        // Same rule as eval_eps_inv_q: no head, no head projection.
+        if (not thc.has_basis_head()) return m_t;
+
         nda::array<ComplexType, 1> buffer_P(NP_loc);
         auto Mloc = dM_tqPQ.local();
         if(bar_basis) {
@@ -377,12 +404,20 @@ namespace methods {
             }
           }
         } else {
-          // M(t,q) = sum_PQ conj(B(q,P)) * M(t,q,P,Q) B(q,Q)
+          // M(t,q) = sum_PQ B(q,P) * M(t,q,P,Q) conj(B(q,Q))
+          // The Coulomb matrix is Z = zeta v zeta^dagger with zeta_P(G=0) = conj(B_P), so the
+          // plane-wave image of a Pi-type object is zeta^dagger M zeta and its head pairs B
+          // (unconjugated) with the row index. Measured, not read off the source: Z^T Bbar is
+          // parallel to B and Z conj(Bbar) to conj(B), so this is the head the Dyson equation
+          // couples to. The conjugate-transposed pairing conj(B_P) M_PQ B_Q agrees only for
+          // symmetric M, which the RPA Pi happens to be; a rank-one update is not.
           auto Chi_qu = thc.basis_head();
+          nda::array<ComplexType, 1> Chi_Q_conj(NQ_loc);
           for (auto [iq, q] : itertools::enumerate(qpt_rng)) {
+            Chi_Q_conj = nda::conj(Chi_qu(q, Q_rng));
             for (auto [it, t] : itertools::enumerate(t_rng)) {
-              nda::blas::gemv(Mloc(it, iq, nda::ellipsis{}), Chi_qu(q, Q_rng), buffer_P);
-              m_t(t, q) += nda::blas::dotc(Chi_qu(q, P_rng), buffer_P);
+              nda::blas::gemv(Mloc(it, iq, nda::ellipsis{}), Chi_Q_conj, buffer_P);
+              m_t(t, q) += nda::blas::dot(Chi_qu(q, P_rng), buffer_P);
             }
           }
         }

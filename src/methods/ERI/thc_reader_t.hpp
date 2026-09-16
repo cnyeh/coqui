@@ -227,9 +227,11 @@ namespace methods {
 
           // copy to host memory if needed, otherwise just move
           _dZ = std::move(_dZ_d);
+          _has_basis_head = true;
           _Chi_head = std::move(_Chi_head_d);
           _Chi_bar_head = std::move(_Chi_bar_head_d());
           _dSinv_Ivec = std::move(_dSinv_Ivec_d);
+          report_head_leakage();
 
           // gather dPa to _X_shm
           _Timer.start("BUILD_GATHER");
@@ -393,8 +395,21 @@ namespace methods {
         auto Z_loc = _dZ.local();
         Z_loc(q, nda::ellipsis{}) = Zq_loc;
       }
+      // FIXME: The fact we have _had_basis_head = false while still allocating _Chi_head and _Chi_bar_head is confusing.
       _Chi_head() = 0.0;
       _Chi_bar_head() = 0.0;
+      _has_basis_head = false;
+      // Any operation requiring the G=0 head of the auxiliary basis is SKIPPED when that 
+      // head is absent. 
+      if (_nqpts_ibz > 1) {
+        app_log(1, "\n[ NOTE ] thc_reader_t::build: the G=0 interpolating-vector heads are "
+                   "not evaluated by the LS-THC fit from Cholesky ERIs. Every operation "
+                   "requiring them is skipped, so across {} q-points the effective "
+                   "divergence treatment is \"ignore_g0\" regardless of what was "
+                   "requested, and the GW self-energy and downfolded bare interaction "
+                   "carry no finite-size correction. Build the THC ERIs through the ISDF "
+                   "path for a production run.\n", _nqpts_ibz);
+      }
       _Timer.stop("BUILD_THC");
 
       // gather dPa to _X_shm
@@ -429,14 +444,22 @@ namespace methods {
               auto Y_0 = _Y_shm.value().local();
               nda::h5_write(grp, "Y_collocation_matrix", Y_0, false);
             }
-            _thc_builder_opt.value().save(grp, _format, _rp, _dZ, _Chi_head, _Chi_bar_head);
+            // Heads were never evaluated on this path; pass empty arrays so thc::save
+            // omits the datasets rather than persisting zeros that read back as real.
+            _thc_builder_opt.value().save(grp, _format, _rp, _dZ,
+                memory::array<HOST_MEMORY, ComplexType, 2>{},
+                memory::array<HOST_MEMORY, ComplexType, 2>{});
           } else {
             APP_ABORT("thc: Unknown file format: {}", _format);
           }
         } else {
           h5::group grp;
           if(_format == "bdft" ) {
-            _thc_builder_opt.value().save(grp, _format, _rp, _dZ, _Chi_head, _Chi_bar_head);
+            // Heads were never evaluated on this path; pass empty arrays so thc::save
+            // omits the datasets rather than persisting zeros that read back as real.
+            _thc_builder_opt.value().save(grp, _format, _rp, _dZ,
+                memory::array<HOST_MEMORY, ComplexType, 2>{},
+                memory::array<HOST_MEMORY, ComplexType, 2>{});
           } else {
             APP_ABORT("thc: Unknown file format: {}", _format);
           }
@@ -550,8 +573,30 @@ namespace methods {
         y_range = nda::range(arng[0],arng[1]);
       }
       nda::h5_read(grp, "interpolating_points", _rp);
-      nda::h5_read(grp, "interpolating_vectors_G0", _Chi_head);
-      nda::h5_read(grp, "dual_interpolating_vectors_G0", _Chi_bar_head);
+      // Heads are omitted from files written without them. Older files instead contain
+      // all-zero arrays, which was the previous way of signalling the same thing, so treat
+      // that as absent too rather than contracting against a sentinel.
+      if (grp.has_dataset("interpolating_vectors_G0") and
+          grp.has_dataset("dual_interpolating_vectors_G0")) {
+        nda::h5_read(grp, "interpolating_vectors_G0", _Chi_head);
+        nda::h5_read(grp, "dual_interpolating_vectors_G0", _Chi_bar_head);
+        double h_max = 0.0;
+        for (auto v : _Chi_head) h_max = std::max(h_max, std::abs(v));
+        _has_basis_head = (h_max > 0.0);
+        if (not _has_basis_head) {
+          app_log(2, "thc_reader_t::read: \"interpolating_vectors_G0\" is identically zero "
+                     "in {}; treating the G=0 heads as absent (legacy file written before "
+                     "they were evaluated).", _eri_file);
+        } else {
+          report_head_leakage();
+        }
+      } else {
+        // Datasets absent: written by a path that never evaluated them. Leave the arrays
+        // zero-filled at their allocated shape so existing consumers behave as before.
+        _has_basis_head = false;
+        _Chi_head() = 0.0;
+        _Chi_bar_head() = 0.0;
+      }
       utils::check(_rp.shape(0) == _Np,
                    "thc_reader_t::build: rp.shape() != Np. Inconsistent dimensions from the precomputed THC-ERI.");
 
@@ -803,6 +848,41 @@ namespace methods {
       }
     }
 
+    /**
+     * True when this object carries usable G=0 interpolating-vector heads.
+     */
+    bool has_basis_head() const { return _has_basis_head; }
+
+    /**
+     * sigma(q) = sum_P Bbar_P(q) conj(B_P(q)), with B = basis_head() and Bbar = basis_bar_head().
+     *
+     * With B = conj(zeta_0) and Bbar = conj(S^{-1}) B (thc.icc, "Store Chi^{q}_{u}(G=0)"),
+     * sigma is the G = 0 element of the projector onto the auxiliary basis,
+     * zeta_0^dag S^{-1} zeta_0 = 1 - lambda_0(q): unity up to the ISDF leakage of the uniform
+     * density mode. |sigma|^2 is the head of the rank-one matrix conj(Bbar) conj(Bbar)^dag
+     * under the head functional of div_utils::head_from_prod_basis(bar_basis = false), which
+     * is what the polarization-head regularization divides by. Recomputed on every call
+     * (nqpts_ibz * Np operations, nothing cached); requires has_basis_head().
+     */
+    nda::array<ComplexType, 1> basis_head_overlap() const {
+      utils::check(_has_basis_head,
+                   "thc_reader_t::basis_head_overlap: this THC object carries no G=0 heads.");
+      long nq = _Chi_head.shape(0), Np = _Chi_head.shape(1);
+      nda::array<ComplexType, 1> sig(nq);
+      sig() = ComplexType(0.0);
+      for (long q = 0; q < nq; ++q)
+        for (long P = 0; P < Np; ++P) sig(q) += _Chi_bar_head(q, P) * std::conj(_Chi_head(q, P));
+      return sig;
+    }
+
+    /// N(q) = |sigma(q)|^2, see basis_head_overlap(); requires has_basis_head().
+    nda::array<double, 1> basis_head_norm() const {
+      auto sig = basis_head_overlap();
+      nda::array<double, 1> N(sig.shape(0));
+      for (long q = 0; q < sig.shape(0); ++q) N(q) = std::norm(sig(q));
+      return N;
+    }
+
     template<MEMORY_SPACE MEM = HOST_MEMORY>
     auto basis_head() const {
       if constexpr (MEM == HOST_MEMORY) {
@@ -981,8 +1061,40 @@ namespace methods {
     std::optional<sArray_t<memory::array_view<HOST_MEMORY, ComplexType, 4>>> _Y_shm;
 
     std::optional<dArray_t<HOST_MEMORY,3>> _dSinv_Ivec; 
+    // True only when the G=0 interpolating-vector heads were actually evaluated.
+    bool _has_basis_head = false;
     memory::array<HOST_MEMORY, ComplexType, 2> _Chi_head;
     memory::array<HOST_MEMORY, ComplexType, 2> _Chi_bar_head;
+    // Report the ISDF leakage of the uniform density mode, |sigma(q) - 1| with
+    // sigma = basis_head_overlap(), once when the head vectors become available. The leakage
+    // limits every q->0 head built from these vectors (the eps_inv head, the polarization
+    // head), so a large value says the integrals themselves are under-converged.
+    void report_head_leakage() const {
+      constexpr double leakage_warn = 0.05;   // max_q |sigma-1|: fit resolves the mode poorly
+      constexpr double leakage_poor = 0.20;   // mean_q |sigma-1|: integrals under-converged
+      auto sig = basis_head_overlap();
+      double d_mean = 0.0, d_max = 0.0;
+      for (long q = 0; q < sig.shape(0); ++q) {
+        double d = std::abs(sig(q) - ComplexType(1.0));
+        d_mean += d;
+        d_max = std::max(d_max, d);
+      }
+      d_mean /= sig.shape(0);
+      app_log(2, "  THC head vectors: sigma(q) = sum_P Bbar_P conj(B_P), "
+                 "mean_q |sigma-1| = {:.4e}, max_q |sigma-1| = {:.4e}", d_mean, d_max);
+      if (d_mean > leakage_poor) {
+        app_log(1, "\n[ WARNING ] The THC auxiliary basis does not resolve the uniform density "
+                   "mode: mean_q |sigma-1| = {:.4e} (sigma = sum_P Bbar_P conj(B_P) should be "
+                   "1).\n            The THC integrals are likely insufficient -- tighten the "
+                   "ISDF threshold or increase the number of interpolating points.\n"
+                   "            Every q->0 head in this run (eps_inv and Pi alike) carries this "
+                   "error.\n", d_mean);
+      } else if (d_max > leakage_warn) {
+        app_log(1, "\n[ WARNING ] max_q |sigma-1| = {:.4e} exceeds {:.2e}: the THC auxiliary "
+                   "basis resolves the uniform density mode only approximately (ISDF "
+                   "leakage).\n", d_max, leakage_warn);
+      }
+    }
     memory::array<HOST_MEMORY, long, 1> _rp;
 
     mutable utils::TimerManager _Timer;

@@ -188,6 +188,22 @@ def run_gw(params, h_int,
             correlated subspace.
         - ``dump_w_to_h5`` *(bool, optional, default ``False``)* — if ``True``,
           saves the screened interaction W to the checkpoint file.
+        - ``pi_regularization`` *(str, optional, default ``"none"``)* — enforce the
+          charge-conservation constraint :math:`\Pi_{00}(q=0, i\nu_n) = 0` on the
+          polarizability. 
+          - ``"none"`` — no projection (unmodified GW polarizability).
+          - ``"dynamic"`` — project every :math:`\nu_n \neq 0`, leaving the static
+            sector untouched. This preserves the physical static compressibility, so
+            it is safe for metals, doped systems, and finite temperature alike.
+          - ``"insulator"`` — additionally project :math:`\nu_n = 0`, correct for a
+            gapped system at zero temperature.
+          - ``"extrapolate"`` — project :math:`\nu_n = 0` by the :math:`\nu \to 0`
+            extrapolation of the :math:`\nu_n \neq 0` shifts (linear fit in
+            :math:`\nu^2` over the first four nonzero frequencies). The spurious constant
+            is smooth in :math:`\nu` while the physical static compressibility
+            :math:`-\partial n/\partial\mu` sits at :math:`n = 0` only, so this removes
+            the former and keeps the latter: use it for finite-temperature insulators and
+            metals alike. The retained static excess is reported in the log.
 
     h_int : ThcCoulomb or CholCoulomb
         Primary Coulomb interaction object, used for both the polarizability and

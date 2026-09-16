@@ -60,6 +60,10 @@ def convert_gw_edmft_params(gw_edmft_params: dict):
     
     screen_type = gw_edmft_group.pop('screen_type', 'gw_edmft')
     div_treatment = gw_edmft_group.pop('div_treatment', 'gygi')
+    # Optional projection enforcing Pi_00(q=0,iw) = 0 before the Dyson solve for W.
+    # Threaded to both the gw and wloc stages so the lattice W and the downfolded
+    # W_loc are built from the same polarization.
+    pi_regularization = gw_edmft_group.pop('pi_regularization', 'none')
     outdir = gw_edmft_group.pop('outdir', './')
     prefix = gw_edmft_group.pop('prefix', 'coqui')
     # restart = False implies the workflow will start from a fresh checkpoint where both GW and EDMFT parts start from scratch;
@@ -99,12 +103,14 @@ def convert_gw_edmft_params(gw_edmft_params: dict):
             'screen_type': screen_type,
             'niter': 1,
             'div_treatment': div_treatment,
+            'pi_regularization': pi_regularization,
             'iter_alg': gw_iter_params
         }
 
     # wloc parameters
-    gw_edmft_params['wloc'] = {'outdir': outdir, 'prefix': prefix, 'screen_type': screen_type, 
-                               'div_treatment': div_treatment, 'output_in_tau': True}
+    gw_edmft_params['wloc'] = {'outdir': outdir, 'prefix': prefix, 'screen_type': screen_type,
+                               'div_treatment': div_treatment, 'output_in_tau': True,
+                               'pi_regularization': pi_regularization}
     # gloc parameters
     gw_edmft_params['gloc'] = {'outdir': outdir, 'prefix': prefix}
     # embed parameters

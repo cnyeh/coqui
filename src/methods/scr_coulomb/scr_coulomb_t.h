@@ -84,7 +84,8 @@ namespace solvers {
     scr_coulomb_t(
         const imag_axes_ft::IAFT *ft,
         std::string screen_type,
-      std::string div = "gygi");
+        std::string div = "gygi",
+        std::string pi_regularization = "none");
 
     scr_coulomb_t(scr_coulomb_t const&) = default;
     scr_coulomb_t(scr_coulomb_t &&) = default;
@@ -214,6 +215,65 @@ namespace solvers {
                            std::string coqui_h5_prefix, long iter,
                            comm_t &comm, mf::MF &mf);
 
+    /**
+     * Enforce Pi_00(q=0, i nu_n) = 0 by a rank-one update confined to the charge-head
+     * channel of the THC auxiliary basis:
+     *
+     *   Pi_PQ(q,iw) -= dC(iw) * D_P(q) conj(D_Q(q)) / N(q)
+     *
+     * with dC(iw) = Pi_00(Gamma,iw) read directly from the stored Gamma column, so no
+     * extrapolation is involved. The direction is D = conj(Bbar), the dual head vector in
+     * the pairing the Dyson equation uses (Z = zeta v zeta^dag, zeta_0 = conj(B)); it is the
+     * unique rank-one matrix whose plane-wave image is the charge head alone; N(q) = |sigma|^2
+     * with sigma = thc.basis_head_overlap(). The direct
+     * vector B corrects the head equally well but contaminates the wings at O(1); the
+     * transposed dual, Bbar, zeroes the transposed head functional but is invisible to W
+     * (|B^T Bbar|^2 ~ 1e-12). See implementation_notes/ward_identity/ward_identity_note.tex,
+     * Appendix B, and the unit test "pi_head_z_coupling".
+     *
+     * Under "dynamic" the nu_n = 0 sector is left alone, preserving the physical static
+     * compressibility; under "insulator" it is projected too. Under "extrapolate" the
+     * nu_n = 0 shift is the nu -> 0 limit of dC(i nu_n), n >= 1 (linear fit in nu^2 over
+     * pi_head_tol::extrap_npts points): the Ward-violating constant is smooth in nu while
+     * the static compressibility -dn/dmu lives at n = 0 only, so this removes the former
+     * and keeps the latter -- the right choice for a finite-temperature insulator and for
+     * a metal alike. Under "none" the caller is not supposed to be here at all and the
+     * routine aborts.
+     *
+     * @param dPi_wqPQ  - [INPUT/OUTPUT] polarizability: (nw, nqpts_ibz, Np, Np)
+     * @param thc       - [INPUT] THC-ERI instance
+     * @param pi_head_wq- [INPUT] unprojected head Pi_00(q,iw) from head_from_prod_basis
+     * @return - the applied dC(i nu_n), zero in every sector left untouched
+     */
+    template<nda::MemoryArray Array_4D_t, typename communicator_t>
+    auto regularize_Pi_head(memory::darray_t<Array_4D_t, communicator_t> &dPi_wqPQ,
+                            THC_ERI auto &thc,
+                            const nda::array<ComplexType, 2> &pi_head_wq)
+    -> nda::array<ComplexType, 1>;
+
+    /// The dC(i nu_n) applied by the last regularize_Pi_head() call.
+    const nda::array<ComplexType, 1>& delta_C_w() const {
+      utils::check(_delta_C_w.has_value(),
+                   "scr_coulomb_t::delta_C_w: regularize_Pi_head() has not been called.");
+      return _delta_C_w.value();
+    }
+
+    /**
+     * Pi_00(q, i nu_n) as it entered the last Dyson solve, before any projection.
+     *
+     * Recorded by dyson_W_in_place() unconditionally, including under
+     * pi_regularization = "none": it is the diagnostic that tells a user whether the
+     * projection is needed at all, so it must be available when the projection is off.
+     */
+    const nda::array<ComplexType, 2>& pi_head_wq() const {
+      utils::check(_pi_head_wq.has_value(),
+                   "scr_coulomb_t::pi_head_wq: uninitialized _pi_head_wq.");
+      return _pi_head_wq.value();
+    }
+
+    /// True once regularize_Pi_head() has recorded a dC(i nu_n); guards delta_C_w().
+    bool has_delta_C() const noexcept { return _delta_C_w.has_value(); }
+
   private:
     /**
      * Evaluate polarization function by computing the convolution on the R space
@@ -259,7 +319,12 @@ namespace solvers {
     std::string _screen_type = "";
 
     std::string _div_treatment;
+    // "none" | "dynamic" | "insulator" | "extrapolate" -- see regularize_Pi_head() and
+    std::string _pi_regularization = "none";
     utils::TimerManager _Timer;
+
+    std::optional<nda::array<ComplexType, 1> > _delta_C_w;      // applied dC(i nu_n)
+    std::optional<nda::array<ComplexType, 2> > _pi_head_wq;     // Pi_00(q,iw), unprojected
 
     // optional container for screened interaction
     // TODO Remove these
@@ -268,6 +333,7 @@ namespace solvers {
 
   public:
     std::string div_treatment() const { return _div_treatment; }
+    std::string pi_regularization() const { return _pi_regularization; }
     std::string& screen_type() { return _screen_type; };
     std::string screen_type() const { return _screen_type; };
 
@@ -296,6 +362,8 @@ namespace solvers {
     void reset() noexcept {
       if (_dW_qtPQ_opt.has_value()) _dW_qtPQ_opt.reset();
       if (_eps_inv_head.has_value()) _eps_inv_head.reset();
+      if (_delta_C_w.has_value()) _delta_C_w.reset();
+      if (_pi_head_wq.has_value()) _pi_head_wq.reset();
     }
 
   }; // scr_coulomb_t

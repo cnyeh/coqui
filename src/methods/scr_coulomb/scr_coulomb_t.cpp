@@ -26,15 +26,17 @@
 #include "scr_coulomb_t.h"
 #include "rpa_pi.icc"
 #include "edmft_pi.icc"
+#include "pi_head_proj.icc"
 
 namespace methods {
 namespace solvers {
 
   scr_coulomb_t::scr_coulomb_t(const imag_axes_ft::IAFT *ft,
                                std::string screen_type,
-                               std::string div):
+                               std::string div,
+                               std::string pi_regularization):
     _ft(ft), _screen_type(screen_type),
-    _div_treatment(div), _Timer() {
+    _div_treatment(div), _pi_regularization(pi_regularization), _Timer() {
 
     const std::unordered_set<std::string> valid_pi_scheme = {
         "rpa", "rpa_r", "rpa_k",
@@ -46,6 +48,14 @@ namespace solvers {
     };
     utils::check(valid_pi_scheme.find(_screen_type)!=valid_pi_scheme.end(),
                  "scr_coulomb_t: unknown type of polarizability.");
+
+    const std::unordered_set<std::string> valid_pi_regularization = {
+        "none", "dynamic", "insulator", "extrapolate"
+    };
+    utils::check(valid_pi_regularization.find(_pi_regularization) != valid_pi_regularization.end(),
+                 "scr_coulomb_t: unknown pi_regularization = \"{}\". "
+                 "Valid values are \"none\", \"dynamic\", \"insulator\", \"extrapolate\".",
+                 _pi_regularization);
 
     // Check if tau_mesh is symmetric w.r.t. beta/2
     auto tau_mesh = _ft->tau_mesh();
@@ -175,6 +185,23 @@ namespace solvers {
     app_log(2, "  Evaluation of the screened interaction:");
     app_log(2, "    - processor grid for Pi/W: (w, q, P, Q) = ({}, {}, {}, {})", pgrid[0], pgrid[1], pgrid[2], pgrid[3]);
     app_log(2, "    - block size: (w, q, P, Q) = ({}, {}, {}, {})\n", block_size[0], block_size[1], block_size[2], block_size[3]);
+
+    // Head of the polarization. 
+    // Diagnostic for violation of dynamic particle conservation
+    if (thc.has_basis_head()) {
+      _Timer.start("PI_HEAD_EVAL");
+      _pi_head_wq = div_utils::head_from_prod_basis(dPi_wqPQ, thc, false);
+      _Timer.stop("PI_HEAD_EVAL");
+    } else {
+      // THC has no head vectors. Cache EMPTY array instead. 
+      _pi_head_wq = nda::array<ComplexType, 2>{};
+      app_log(1, "\n[ WARNING ] scr_coulomb_t::dyson_W_in_place: this THC object carries no "
+                 "G=0 interpolating-vector heads, so the polarization head cannot be computed.\n");
+    }
+    if (_pi_regularization != "none") {
+      // enforce dynamic charge conservation by regularizing the head of the polarization
+      regularize_Pi_head(dPi_wqPQ, thc, _pi_head_wq.value());
+    }
 
     // Setup wq_intra_comm
     mpi3::communicator wq_intra_comm = thc.mpi()->comm.split(w_origin*nqpts + q_origin, thc.mpi()->comm.rank());
@@ -547,6 +574,22 @@ namespace solvers {
       nda::h5_write(iter_grp, "eps_inv_head_tq", eps_inv_head_tq, false);
       nda::h5_write(iter_grp, "eps_inv_head_w", eps_inv_head_w, false);
       nda::h5_write(iter_grp, "eps_inv_head_t", eps_inv_head_t, false);
+
+      // Head of the polarization as it entered the Dyson solve, "BEFORE" any projection.
+      // Written whether or not the projection ran: it is the diagnostic that tells a user
+      // whether the projection is needed at all. 
+      // Empty array means the THC object had no head vectors, so there is nothing to record.
+      if (_pi_head_wq.has_value() and _pi_head_wq.value().size() > 0) {
+        nda::h5_write(iter_grp, "pi_head_wq", _pi_head_wq.value(), false);
+      }
+      // The applied dC(i nu_n). Present only when the projection ran, so its absence is
+      // itself the record that pi_regularization was "none".
+      if (_delta_C_w.has_value()) {
+        nda::h5_write(iter_grp, "delta_C_w", _delta_C_w.value(), false);
+      }
+      // Provenance: record the setting itself, so a reader need not infer it from
+      // the presence or absence of delta_C_w.
+      h5::h5_write(iter_grp, "pi_regularization", _pi_regularization);
     }
     comm.barrier();
   }
@@ -593,6 +636,10 @@ namespace solvers {
   template void scr_coulomb_t::dump_eps_inv_head(
       const nda::array<ComplexType,2> &, const nda::array<ComplexType,1> &,
       std::string, long, mpi3::communicator &, mf::MF &);
+
+  template nda::array<ComplexType, 1>
+  scr_coulomb_t::regularize_Pi_head(memory::darray_t<Arr4D, mpi3::communicator>&,
+                                    thc_reader_t&, const nda::array<ComplexType, 2>&);
 
 
 }  // solvers

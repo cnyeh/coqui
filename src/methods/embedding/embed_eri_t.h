@@ -310,6 +310,12 @@ namespace methods {
 
     std::string _div_treatment;
     std::string _bare_div_treatment;
+    // Regularization of the polarization head, Pi_00(q=0,iw) -> 0, applied before the
+    // Dyson solve for W. One of "none" (default), "dynamic", "insulator", and "extrapolate". 
+    //Set through set_pi_regularization() rather than the constructor, since embed_eri_t is built
+    // in several places.
+    // FIXME: This should also be part of the constructor.
+    std::string _pi_regularization = "none";
     utils::TimerManager _Timer;
 
     std::string _output_type = "default";
@@ -317,6 +323,8 @@ namespace methods {
   public:
     mf::MF* MF() const { return _MF; }
     const std::string& div_treatment() const { return _div_treatment; }
+    const std::string& pi_regularization() const { return _pi_regularization; }
+    void set_pi_regularization(std::string s) { _pi_regularization = std::move(s); }
 
   }; // embed_eri_t
 } // methods
