@@ -25,6 +25,9 @@
 
 #include "python/mean_field/mf_module.hpp"
 #include "python/mean_field/mf_module.wrap.hxx"
+#include "python/interaction/eri_module.hpp"
+#include "python/interaction/eri_module.wrap.hxx"
+#include "methods/scr_coulomb/dielectric_pproc.hpp"
 
 namespace coqui_py::post_proc {
 
@@ -58,6 +61,37 @@ namespace coqui_py::post_proc {
     methods::post_processing("dump_hartree", mf.get_mf(), parser.get_root());
   }
 
+  /**
+   * Dielectric function from a checkpoint Green's function with polarization-head
+   * regularization. See methods::dielectric_function (dielectric_pproc.hpp) for the keys
+   * and the output group layout. A "crpa" or "edmft" screen_type needs the bosonic
+   * projector, which this overload reads from the HDF5 file named by params["wannier_file"].
+   */
+  template<typename eri_handler_t>
+  void dielectric_function_with_projector_from_h5(
+      eri_handler_t &eri, const std::string &params,
+      std::optional<std::map<std::string, nda::array<ComplexType, 5> > > local_polarizabilities) {
+    auto parser = InputParser(params);
+    methods::dielectric_function(eri.get_eri(), parser.get_root(),
+                                 std::move(local_polarizabilities));
+  }
+
+  /**
+   * Same, with the bosonic projector supplied directly instead of read from a Wannier file.
+   */
+  template<typename eri_handler_t>
+  void dielectric_function(
+      eri_handler_t &eri, const std::string &params,
+      const nda::array<ComplexType, 5> &projector_ksIai,
+      const nda::array<long, 3> &band_window,
+      const nda::array<RealType, 2> &kpts_crys,
+      std::optional<std::map<std::string, nda::array<ComplexType, 5> > > local_polarizabilities) {
+    auto parser = InputParser(params);
+    methods::dielectric_function(eri.get_eri(), parser.get_root(),
+                                 projector_ksIai, band_window, kpts_crys,
+                                 std::move(local_polarizabilities));
+  }
+
   auto pade(nda::array<ComplexType, 2> A_iw, nda::array<ComplexType, 1> iw_mesh,
             double w_min, double w_max, long Nw, int Nfit, double eta, bool is_iw_pos_only)
   -> std::tuple<nda::array<ComplexType, 2>, nda::array<ComplexType, 1>> {
@@ -67,6 +101,18 @@ namespace coqui_py::post_proc {
       w_grid
     );
   }
+
+  // public template instantiation: THC only (Cholesky ERIs carry no auxiliary-basis heads)
+  template void dielectric_function_with_projector_from_h5(
+    ThcCoulomb&, const std::string&,
+    std::optional<std::map<std::string, nda::array<ComplexType, 5> > >);
+
+  template void dielectric_function(
+    ThcCoulomb&, const std::string&,
+    const nda::array<ComplexType, 5> &,
+    const nda::array<long, 3> &,
+    const nda::array<RealType, 2> &,
+    std::optional<std::map<std::string, nda::array<ComplexType, 5> > >);
 
 } // coqui_py
 

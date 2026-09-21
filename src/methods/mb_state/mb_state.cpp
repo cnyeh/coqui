@@ -92,10 +92,26 @@ namespace methods {
     if (mpi->node_comm.root()) {
       auto Pi_imp = sPi_imp_wabcd.value().local();
       auto Pi_dc = sPi_dc_wabcd.value().local();
-      utils::check(Pi_imp.shape() == local_polarizabilities.at("imp").shape(),
-                   "MBState::set_local_polarizabilities: Incorrect dimension for the provided pi_imp.");
-      utils::check(Pi_dc.shape() == local_polarizabilities.at("dc").shape(),
-                   "MBState::set_local_polarizabilities: Incorrect dimension for the provided pi_dc.");
+      // Print both shapes: the expected nImpOrbs is the TOTAL number of local orbitals,
+      // because read_wannier_basis merges every correlated shell into one impurity, so a
+      // caller passing the solved inequivalent impurity alone lands here with no way to
+      // tell which of the two dimensions is wrong.
+      auto pi_shape_msg =
+          "MBState::set_local_polarizabilities: {} has the wrong shape. Expected "
+          "({}, {}, {}, {}, {}) = (nw_half, nImpOrbs, nImpOrbs, nImpOrbs, nImpOrbs), "
+          "received ({}, {}, {}, {}, {}). nImpOrbs counts ALL local orbitals: the "
+          "projector combines multiple correlated shells into a single impurity, so an "
+          "impurity solution must be embedded onto every shell before it is passed here.";
+      auto imp_exp = Pi_imp.shape();
+      auto imp_got = local_polarizabilities.at("imp").shape();
+      utils::check(imp_exp == imp_got, pi_shape_msg, "pi_imp",
+                   imp_exp[0], imp_exp[1], imp_exp[2], imp_exp[3], imp_exp[4],
+                   imp_got[0], imp_got[1], imp_got[2], imp_got[3], imp_got[4]);
+      auto dc_exp = Pi_dc.shape();
+      auto dc_got = local_polarizabilities.at("dc").shape();
+      utils::check(dc_exp == dc_got, pi_shape_msg, "pi_dc",
+                   dc_exp[0], dc_exp[1], dc_exp[2], dc_exp[3], dc_exp[4],
+                   dc_got[0], dc_got[1], dc_got[2], dc_got[3], dc_got[4]);
       Pi_imp = local_polarizabilities.at("imp");
       Pi_dc = local_polarizabilities.at("dc");
     }

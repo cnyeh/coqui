@@ -3,7 +3,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_UNIT_TEST_DIR})
 
 set(TEST_ID methods_scr_coulomb)
 
-add_executable(test_${TEST_ID} test_pi_head_proj.cpp)
+add_executable(test_${TEST_ID} test_pi_head_proj.cpp test_dielectric_pproc.cpp)
 target_link_libraries(test_${TEST_ID} catch_main utils numerics meanfield methods_lib)
 
 

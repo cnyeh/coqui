@@ -4,6 +4,7 @@
 SET(SRCS
   scr_coulomb_t.cpp
   scr_coulomb_chol.cpp
+  dielectric_pproc.cpp
   )
 
 if(USE_DEVICE_COMPILER)

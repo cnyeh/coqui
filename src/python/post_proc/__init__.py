@@ -31,6 +31,7 @@ from .post_proc import (
   aaa_adapol_imag,
   minipole,
 )
+from .dielectric_function import dielectric_function
 from .plot_utils import band_plot, spectral_plot
 
 _TRIQS_AVAILABLE = False
@@ -61,7 +62,7 @@ def __getattr__(name):
 
 __all__ = [
   "band_interpolation", "spectral_interpolation",
-  "local_dos", "unfold_bz", "dump_vxc", "dump_hartree",
+  "local_dos", "unfold_bz", "dump_vxc", "dump_hartree", "dielectric_function",
   "pade", "aaa_adapol_on_mesh", "aaa_adapol", "aaa_adapol_imag", "minipole",
   "band_plot", "spectral_plot",
 ]

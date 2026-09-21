@@ -522,6 +522,20 @@ namespace methods {
       }
 
       /**
+       * Index of the Gamma point in a q-point list, or -1 if absent.
+       * @param Qpts - [INPUT] q-points, shape (nq, 3)
+       * @param tol  - [INPUT] |q|^2 below which a point counts as Gamma
+       */
+      template<nda::ArrayOfRank<2> Array_q_t>
+      static long find_gamma_index(Array_q_t &&Qpts, double tol = 1e-10) {
+        for (long q = 0; q < Qpts.shape(0); ++q) {
+          auto qpt = Qpts(q, nda::range::all);
+          if (qpt(0)*qpt(0) + qpt(1)*qpt(1) + qpt(2)*qpt(2) < tol) return q;
+        }
+        return -1;
+      }
+
+      /**
        * Find all indices of q-points with the smallest absolute value
        * Returns all q-points that share the same minimum |q| (accounting for symmetry)
        * @param Qpts - [INPUT] array of q-points (shape: [nqpts, 3])

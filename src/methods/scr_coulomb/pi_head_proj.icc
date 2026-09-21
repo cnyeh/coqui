@@ -58,12 +58,7 @@ namespace solvers {
                  pi_head_wq.shape(0), pi_head_wq.shape(1), nw, nqpts_ibz);
 
     // Locate the Gamma point.
-    long iq_gamma = -1;
-    for (long q = 0; q < nqpts_ibz; ++q) {
-      auto qpt = MF->Qpts_ibz(q);
-      double n2 = qpt(0)*qpt(0) + qpt(1)*qpt(1) + qpt(2)*qpt(2);
-      if (n2 < pi_head_tol::gamma) { iq_gamma = q; break; }
-    }
+    long iq_gamma = div_utils::find_gamma_index(MF->Qpts_ibz(), pi_head_tol::gamma);
     utils::check(iq_gamma >= 0,
                  "scr_coulomb_t::regularize_Pi_head: no q-point at the zone center was "
                  "found in the irreducible list, so Pi_00(0,iw) cannot be extracted.");

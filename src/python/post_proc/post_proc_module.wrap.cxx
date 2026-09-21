@@ -18,6 +18,8 @@
 
 using c2py::operator""_a;
 
+// ==================== Wrapped classes =====================
+
 // ==================== enums =====================
 
 // ==================== module classes =====================
@@ -25,35 +27,77 @@ using c2py::operator""_a;
 // ==================== module functions ====================
 
 // band_interpolation
-static auto const _c2py_fun_0 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_0 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](const coqui_py::Mf &mf, const std::string &params) {
       return coqui_py::post_proc::band_interpolation(mf, params);
     },
     "mf", "params")};
 
+// dielectric_function
+static auto const fun_1 = c2py::dispatcher_f_kw_t{c2py::cfun(
+    [](coqui_py::ThcCoulomb &eri, const std::string &params,
+       const nda::basic_array<
+           std::complex<double>, 5, nda::C_layout, 'A',
+           nda::heap_basic<nda::mem::mallocator<nda::mem::AddressSpace::Host>>>
+           &projector_ksIai,
+       const nda::basic_array<
+           long, 3, nda::C_layout, 'A',
+           nda::heap_basic<nda::mem::mallocator<nda::mem::AddressSpace::Host>>>
+           &band_window,
+       const nda::basic_array<
+           double, 2, nda::C_layout, 'A',
+           nda::heap_basic<nda::mem::mallocator<nda::mem::AddressSpace::Host>>>
+           &kpts_crys,
+       std::optional<std::map<
+           std::string,
+           nda::basic_array<std::complex<double>, 5, nda::C_layout, 'A',
+                            nda::heap_basic<nda::mem::mallocator<
+                                nda::mem::AddressSpace::Host>>>>>
+           local_polarizabilities) {
+      return coqui_py::post_proc::dielectric_function(
+          eri, params, projector_ksIai, band_window, kpts_crys,
+          local_polarizabilities);
+    },
+    "eri", "params", "projector_ksIai", "band_window", "kpts_crys",
+    "local_polarizabilities")};
+
+// dielectric_function_with_projector_from_h5
+static auto const fun_2 = c2py::dispatcher_f_kw_t{c2py::cfun(
+    [](coqui_py::ThcCoulomb &eri, const std::string &params,
+       std::optional<std::map<
+           std::string,
+           nda::basic_array<std::complex<double>, 5, nda::C_layout, 'A',
+                            nda::heap_basic<nda::mem::mallocator<
+                                nda::mem::AddressSpace::Host>>>>>
+           local_polarizabilities) {
+      return coqui_py::post_proc::dielectric_function_with_projector_from_h5(
+          eri, params, local_polarizabilities);
+    },
+    "eri", "params", "local_polarizabilities")};
+
 // dump_hartree
-static auto const _c2py_fun_1 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_3 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](const coqui_py::Mf &mf, const std::string &params) {
       return coqui_py::post_proc::dump_hartree(mf, params);
     },
     "mf", "params")};
 
 // dump_vxc
-static auto const _c2py_fun_2 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_4 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](const coqui_py::Mf &mf, const std::string &params) {
       return coqui_py::post_proc::dump_vxc(mf, params);
     },
     "mf", "params")};
 
 // local_dos
-static auto const _c2py_fun_3 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_5 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](const coqui_py::Mf &mf, const std::string &params) {
       return coqui_py::post_proc::local_dos(mf, params);
     },
     "mf", "params")};
 
 // pade
-static auto const _c2py_fun_4 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_6 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](nda::basic_array<
            std::complex<double>, 2, nda::C_layout, 'A',
            nda::heap_basic<nda::mem::mallocator<nda::mem::AddressSpace::Host>>>
@@ -71,43 +115,57 @@ static auto const _c2py_fun_4 = c2py::dispatcher_f_kw_t{c2py::cfun(
     "is_iw_pos_only")};
 
 // spectral_interpolation
-static auto const _c2py_fun_5 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_7 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](const coqui_py::Mf &mf, const std::string &params) {
       return coqui_py::post_proc::spectral_interpolation(mf, params);
     },
     "mf", "params")};
 
 // unfold_bz
-static auto const _c2py_fun_6 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_8 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](const coqui_py::Mf &mf, const std::string &params) {
       return coqui_py::post_proc::unfold_bz(mf, params);
     },
     "mf", "params")};
 
-static const auto _c2py_doc_0 = _c2py_fun_0.doc(R"DOC()DOC");
-static const auto _c2py_doc_1 = _c2py_fun_1.doc(R"DOC()DOC");
-static const auto _c2py_doc_2 = _c2py_fun_2.doc(R"DOC()DOC");
-static const auto _c2py_doc_3 = _c2py_fun_3.doc(R"DOC()DOC");
-static const auto _c2py_doc_4 = _c2py_fun_4.doc(R"DOC()DOC");
-static const auto _c2py_doc_5 = _c2py_fun_5.doc(R"DOC()DOC");
-static const auto _c2py_doc_6 = _c2py_fun_6.doc(R"DOC()DOC");
+static const auto doc_d_0 = fun_0.doc(R"DOC()DOC");
+static const auto doc_d_1 = fun_1.doc(R"DOC(
+Same, with the bosonic projector supplied directly instead of read from a Wannier file.
+)DOC");
+static const auto doc_d_2 = fun_2.doc(R"DOC(
+Dielectric function from a checkpoint Green's function with polarization-head
+regularization. See methods::dielectric_function (dielectric_pproc.hpp) for the keys
+and the output group layout. A "crpa" or "edmft" screen_type needs the bosonic
+projector, which this overload reads from the HDF5 file named by params["wannier_file"].
+)DOC");
+static const auto doc_d_3 = fun_3.doc(R"DOC()DOC");
+static const auto doc_d_4 = fun_4.doc(R"DOC()DOC");
+static const auto doc_d_5 = fun_5.doc(R"DOC()DOC");
+static const auto doc_d_6 = fun_6.doc(R"DOC()DOC");
+static const auto doc_d_7 = fun_7.doc(R"DOC()DOC");
+static const auto doc_d_8 = fun_8.doc(R"DOC()DOC");
 //--------------------- module function table  -----------------------------
 
 static PyMethodDef module_methods[] = {
-    {"band_interpolation", (PyCFunction)c2py::pyfkw<_c2py_fun_0>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_0.c_str()},
-    {"dump_hartree", (PyCFunction)c2py::pyfkw<_c2py_fun_1>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_1.c_str()},
-    {"dump_vxc", (PyCFunction)c2py::pyfkw<_c2py_fun_2>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_2.c_str()},
-    {"local_dos", (PyCFunction)c2py::pyfkw<_c2py_fun_3>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_3.c_str()},
-    {"pade", (PyCFunction)c2py::pyfkw<_c2py_fun_4>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_4.c_str()},
-    {"spectral_interpolation", (PyCFunction)c2py::pyfkw<_c2py_fun_5>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_5.c_str()},
-    {"unfold_bz", (PyCFunction)c2py::pyfkw<_c2py_fun_6>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_6.c_str()},
+    {"band_interpolation", (PyCFunction)c2py::pyfkw<fun_0>,
+     METH_VARARGS | METH_KEYWORDS, doc_d_0.c_str()},
+    {"dielectric_function", (PyCFunction)c2py::pyfkw<fun_1>,
+     METH_VARARGS | METH_KEYWORDS, doc_d_1.c_str()},
+    {"dielectric_function_with_projector_from_h5",
+     (PyCFunction)c2py::pyfkw<fun_2>, METH_VARARGS | METH_KEYWORDS,
+     doc_d_2.c_str()},
+    {"dump_hartree", (PyCFunction)c2py::pyfkw<fun_3>,
+     METH_VARARGS | METH_KEYWORDS, doc_d_3.c_str()},
+    {"dump_vxc", (PyCFunction)c2py::pyfkw<fun_4>, METH_VARARGS | METH_KEYWORDS,
+     doc_d_4.c_str()},
+    {"local_dos", (PyCFunction)c2py::pyfkw<fun_5>, METH_VARARGS | METH_KEYWORDS,
+     doc_d_5.c_str()},
+    {"pade", (PyCFunction)c2py::pyfkw<fun_6>, METH_VARARGS | METH_KEYWORDS,
+     doc_d_6.c_str()},
+    {"spectral_interpolation", (PyCFunction)c2py::pyfkw<fun_7>,
+     METH_VARARGS | METH_KEYWORDS, doc_d_7.c_str()},
+    {"unfold_bz", (PyCFunction)c2py::pyfkw<fun_8>, METH_VARARGS | METH_KEYWORDS,
+     doc_d_8.c_str()},
     {nullptr, nullptr, 0, nullptr} // Sentinel
 };
 
@@ -154,9 +212,6 @@ PyInit_post_proc_module() {
 
   conv_table[std::type_index(typeid(c2py::py_range)).name()] =
       &c2py::wrap_pytype<c2py::py_range>;
-#define _add_type(T, N) c2py::add_type_object_to_main<T>(N, m, conv_table)
-
-#undef _add_type
 
   return m;
 }

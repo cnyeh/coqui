@@ -146,15 +146,6 @@ namespace bdft_tests {
     return pg;
   }
 
-  static long find_gamma_index(mf::MF &mf) {
-    for (long q = 0; q < mf.nqpts_ibz(); ++q) {
-      auto qpt = mf.Qpts_ibz(q);
-      double n2 = qpt(0)*qpt(0) + qpt(1)*qpt(1) + qpt(2)*qpt(2);
-      if (n2 < 1e-10) return q;
-    }
-    return -1;
-  }
-
   TEST_CASE("pi_head_projection", "[methods][scr_coulomb][pi_head]") {
     auto& mpi = utils::make_unit_test_mpi_context();
 
@@ -164,7 +155,7 @@ namespace bdft_tests {
                                                1e-10, mf->ecutrho(), 1, 1024));
     long Np = thc.Np();
     long nw = 4;
-    long iq_gamma = find_gamma_index(*mf);
+    long iq_gamma = solvers::div_utils::find_gamma_index(mf->Qpts_ibz());
     REQUIRE(iq_gamma >= 0);
 
     solvers::scr_coulomb_t scr_eri(&ft, "rpa", "ignore_g0", "dynamic");
@@ -353,7 +344,7 @@ namespace bdft_tests {
     long Np = thc.Np();
     long nq = mf->nqpts_ibz();
     long nw = 2;
-    long iq_gamma = find_gamma_index(*mf);
+    long iq_gamma = solvers::div_utils::find_gamma_index(mf->Qpts_ibz());
     REQUIRE(iq_gamma >= 0);
     REQUIRE(nq > 1);
 
@@ -427,7 +418,7 @@ namespace bdft_tests {
     long Np = thc.Np();
     long nq = mf->nqpts_ibz();
     long nw = 4;
-    long iq_gamma = find_gamma_index(*mf);
+    long iq_gamma = solvers::div_utils::find_gamma_index(mf->Qpts_ibz());
     REQUIRE(iq_gamma >= 0);
 
     // dyson_W_in_place splits thc.mpi()->comm by the array's (w, q) origins and asserts
@@ -624,7 +615,7 @@ namespace bdft_tests {
                                                1e-10, mf->ecutrho(), 1, 1024));
     long Np = thc.Np();
     long nq = mf->nqpts_ibz();
-    long iq_gamma = find_gamma_index(*mf);
+    long iq_gamma = solvers::div_utils::find_gamma_index(mf->Qpts_ibz());
     REQUIRE(iq_gamma >= 0);
 
     auto wn_b = ft.wn_mesh_b();
@@ -714,7 +705,7 @@ namespace bdft_tests {
                                                1e-10, mf->ecutrho(), 1, 1024));
 
     long nw_half   = (ft.nw_b() % 2 == 0) ? ft.nw_b()/2 : ft.nw_b()/2 + 1;
-    long iq_gamma  = find_gamma_index(*mf);
+    long iq_gamma  = solvers::div_utils::find_gamma_index(mf->Qpts_ibz());
     REQUIRE(iq_gamma >= 0);
     const long h5_iter = 1;
 
@@ -855,7 +846,7 @@ namespace bdft_tests {
                                                1e-10, mf->ecutrho(), 1, 1024));
 
     long nq       = mf->nqpts_ibz();
-    long iq_gamma = find_gamma_index(*mf);
+    long iq_gamma = solvers::div_utils::find_gamma_index(mf->Qpts_ibz());
     REQUIRE(iq_gamma >= 0);
     // Without at least one finite q there is nothing to compare the Gamma head against,
     // and the projection degenerates (regularize_Pi_head warns about exactly this).
