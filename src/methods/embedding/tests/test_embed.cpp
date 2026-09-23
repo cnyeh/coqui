@@ -522,6 +522,64 @@ TEST_CASE("downfold_1e_mb_qp", "[methods][embed][df_1e]") {
     }
   }
 
+  TEST_CASE("downfold_2e_crpa_schemes_agree_on_disentangled_window", "[methods][embed][df_2e]") {
+    // LiH 2x2x2 with a 2-band window and 2 Wannier functions: n_imp == n_W, so the three
+    // active-space schemes (projector, band selection, regularized projector) must coincide.
+    auto& mpi = utils::make_unit_test_mpi_context();
+    auto [outdir, prefix_in] = utils::utest_filename("qe_lih222");
+    auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi, "qe_lih222"));
+    std::string wannier_file = outdir + "/lih_wan.h5";
+
+    thc_reader_t thc(mf, make_thc_reader_ptree(mf->nbnd()*20, "", "incore", "", "bdft",
+                                               1e-10, mf->ecutrho(), 1, 1024));
+    std::string prefix = "coqui_crpa_schemes";
+    imag_axes_ft::IAFT ft(1000.0, 1.2, imag_axes_ft::ir_basis, "high", true);
+    simple_dyson dyson(mf.get(), &ft);
+    write_mf_data(*mf, ft, dyson, prefix);
+    mpi->comm.barrier();
+
+    auto uloc_for = [&](std::string screen_type) {
+      MBState mb_state(ft, prefix, mf, wannier_file, true);
+      utils::check(mb_state.proj_boson->nImpOrbs() == mb_state.proj_boson->nOrbs_W(),
+                   "test premise violated: the LiH window is entangled (n_imp = {}, n_W = {}).",
+                   mb_state.proj_boson->nImpOrbs(), mb_state.proj_boson->nOrbs_W());
+      ptree pt;
+      pt.put("permut_symm", true);
+      pt.put("force_real", true);
+      pt.put("greens_func_source", "");
+      embed_eri_t embed_2e(*mf, "gygi_smallest_q");
+      embed_2e.downfolding_crpa(thc, mb_state, pt, screen_type);
+      mpi->comm.barrier();
+
+      nda::array<ComplexType, 5> Uloc;
+      long iter;
+      h5::file file(prefix+".mbpt.h5", 'r');
+      auto df_grp = h5::group(file).open_group("downfold_2e");
+      h5::h5_read(df_grp, "final_iter", iter);
+      nda::h5_read(df_grp.open_group("iter"+std::to_string(iter)), "Uloc_wabcd", Uloc);
+      return Uloc;
+    };
+
+    auto U_crpa = uloc_for("crpa");
+    auto U_ks   = uloc_for("crpa_ks");
+    auto U_vasp = uloc_for("crpa_vasp");
+
+    REQUIRE(U_ks.shape() == U_crpa.shape());
+    REQUIRE(U_vasp.shape() == U_crpa.shape());
+    double d_ks = 0.0, d_vasp = 0.0;
+    nda::for_each(U_crpa.shape(), [&](auto... i) {
+      d_ks   = std::max(d_ks,   std::abs(U_ks(i...)   - U_crpa(i...)));
+      d_vasp = std::max(d_vasp, std::abs(U_vasp(i...) - U_crpa(i...)));
+    });
+    app_log(2, "max |U_crpa_ks - U_crpa| = {}, max |U_crpa_vasp - U_crpa| = {}", d_ks, d_vasp);
+    REQUIRE(d_ks   < 1e-8);
+    REQUIRE(d_vasp < 1e-8);
+
+    mpi->comm.barrier();
+    if (mpi->comm.root()) remove((prefix + ".mbpt.h5").c_str());
+    mpi->comm.barrier();
+  }
+
   TEST_CASE("compute_downfolded_coulomb_tensors", "[methods][embed][df_2e]") {
     auto& mpi = utils::make_unit_test_mpi_context();
 

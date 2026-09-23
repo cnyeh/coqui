@@ -278,6 +278,7 @@ def run_gw_edmft(h_int, embedding, inner_loop_alg=1, *, proj_info=None, params: 
     solver_chkpt_h5 = impurity_params.pop('chkpt_h5', coqui_chkpt_h5)
 
     # DMFT state container
+    # FIXME "basis" is ignored which is misleading. 
     dmft_state = coqui_dmft.DMFTState.make_dmft_state(
         coqui_chkpt_h5, embedding, embedding_2e, 
         wmax_imp=imp_iaft_params.get('wmax', None),

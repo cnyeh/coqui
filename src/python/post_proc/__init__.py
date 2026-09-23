@@ -33,7 +33,7 @@ from .post_proc import (
   matsubara_renormalization_factor,
   quasiparticle_renormalization_factor,
 )
-from .plot_utils import band_plot, spectral_plot
+from .plot_utils import band_plot, spectral_plot, wannier_weight_plot, wannier_weights_on_kpath
 
 _TRIQS_AVAILABLE = False
 _TRIQS_IMPORT_ERROR = None
