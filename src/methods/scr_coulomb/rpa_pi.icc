@@ -15,6 +15,7 @@
 #include "numerics/imag_axes_ft/iaft_utils.hpp"
 #include "methods/ERI/detail/concepts.hpp"
 #include "methods/HF/thc_solver_comm.hpp"
+#include "methods/scr_coulomb/crpa_band_selection.hpp"
 
 namespace methods {
 namespace solvers {
@@ -345,81 +346,38 @@ namespace solvers {
     auto sGG_tskij = make_shared_array<Array_view_5D_t>(*mpi, G_tskij.shape());
     sGG_tskij.set_zero();
 
-    auto find_largest_indices = [&](const nda::array<ComplexType, 2> &P_ij, int nImpOrbs) {
-      // Check the largest diagonals
-      auto nOrbs_W = P_ij.shape(0);
-      std::vector<std::pair<double, int>> vp;
-      for (int i = 0; i < nOrbs_W; ++i)
-        vp.emplace_back(P_ij(i, i).real(), i);
-
-      std::nth_element(vp.begin(), vp.begin() + nImpOrbs, vp.end(),
-                       [](const std::pair<double, int>& a, const std::pair<double, int>& b) {
-                         return a.first > b.first;
-                       });
-      std::vector<int> indices(nImpOrbs);
-      for (int i = 0; i < nImpOrbs; ++i)
-        indices[i] = vp[i].second;
-
-      return indices;
-    };
-
     if (scheme == 0) {
       app_log(2, "Evaluate polarizability within the active space using projection matrices.\n"
                  "(This might give problems when the projection matrices are not unitary!)");
       auto G_tskIab = proj.downfold_k(G_tskij, mpi->comm);
       proj.upfold(sGG_tskij, G_tskIab);
-    } else if (scheme == 1) {
-      app_log(2, "Evaluate polarizability within the active space using KS bands having strong Wannier orbitals character at each k-point.\n"
-                 "(This is exact if the projection matrices are unitary)");
-      // construct sGG_tskij locally here:
-      // 1) Compute P_kij = C_kai.T.conj * C_kai
-      // 2) For each k-points, check the largest "nImpOrbs" diagonals
-      // 3) For those diagonals, set it to identity to P_kij_regularized
-      // 4) Set other entries to zero
+    } else if (scheme == 1 or scheme == 2) {
+      if (scheme == 1)
+        app_log(2, "Evaluate polarizability within the active space using the primary-basis states with\n"
+                   "the largest Wannier weight at each k-point (spectral cRPA, Kaltak et al. 2025).\n"
+                   "(Exact for a disentangled window.)");
+      else
+        app_log(2, "Evaluate polarizability within the active space using the regularized projection\n"
+                   "matrices of the projector cRPA (Kaltak, VASP).\n"
+                   "(Exact for a disentangled window.)");
+      // Both schemes select, at each spin and k-point, the nImpOrbs primary-basis bands with the largest
+      // Wannier weight P_ii = sum_a |C_ai|^2 (crpa_band_selection.hpp). Scheme 1 projects G onto
+      // those bands (Theta = 0/1 diagonal); scheme 2 keeps the corresponding rows of P = C^dagger C.
       auto C_skIai = proj.C_skIai();
       auto W_rng = proj.W_rng();
       auto [ns, nkpts, nImps, nImpOrbs, nOrbs_W] = C_skIai.shape();
       auto nkpts_ibz = sGG_tskij.shape()[2];
-      nda::array<ComplexType, 2> P_ij(nOrbs_W, nOrbs_W);
-      nda::array<ComplexType, 2> G_tmp(nOrbs_W, nOrbs_W);
-      auto GG_loc = sGG_tskij.local();
-      sGG_tskij.win().fence();
-      for (size_t skI=mpi->node_comm.rank(); skI<ns*nkpts_ibz*nImps; skI+=mpi->node_comm.size()) {
-        size_t is = skI / (nkpts_ibz * nImps); // skI = is * nkpts_ibz*nImps + ik * nImps + imp
-        size_t ik = (skI / nImps) % nkpts_ibz;
-        size_t imp = skI % nImps;
+      // the first nkpts_ibz points of the full mesh are the IBZ (bz_symmetry.hpp)
+      nda::array<double, 2> kpts_ibz = thc.MF()->kpts_crystal()(nda::range(nkpts_ibz), nda::range::all);
 
-        nda::blas::gemm(ComplexType(1.0), nda::dagger(C_skIai(is,ik,imp,nda::ellipsis{})),
-                        C_skIai(is,ik,imp,nda::ellipsis{}),
-                        ComplexType(0.0), P_ij);
-
-        auto indices = find_largest_indices(P_ij, nImpOrbs);
-        P_ij() = 0.0;
-        for (int i=0; i<indices.size(); ++i)
-          P_ij(indices[i], indices[i]) = ComplexType(1.0);
-
-        size_t nts = G_tskij.shape(0);
-        for (size_t it=0; it<nts; ++it) {
-          nda::blas::gemm(G_tskij(it,is,ik,W_rng[imp],W_rng[imp]), P_ij, G_tmp);
-          nda::blas::gemm(ComplexType(1.0), nda::dagger(P_ij), G_tmp,
-                          ComplexType(0.0), GG_loc(it,is,ik,W_rng[imp],W_rng[imp]));
-        }
-
+      std::vector<crpa::band_selection_t> selections;
+      selections.reserve(nImps);
+      for (long imp = 0; imp < nImps; ++imp) {
+        selections.push_back(crpa::select_bands(
+            C_skIai(nda::range::all, nda::range(nkpts_ibz), imp, nda::ellipsis{}), W_rng[imp].first()));
+        crpa::log_band_selection(selections.back(), kpts_ibz, _screen_type);
       }
-      sGG_tskij.win().fence();
 
-    } else if (scheme == 2) {
-      app_log(2, "Evaluate polarizability within the active space using the regularized projection matrices \n"
-                 "motivated by Merzuk Kaltak's thesis and VASP implementation. \n"
-                 "(This is exact if the projection matrices are unitary)");
-      // construct sGG_tskij locally here:
-      // 1) Compute P_kij = C_kai.T.conj * C_kai
-      // 2) For each k-points, check the largest "nImpOrbs" diagonals
-      // 3) Construct regularized projection matrices
-      auto C_skIai = proj.C_skIai();
-      auto W_rng = proj.W_rng();
-      auto [ns, nkpts, nImps, nImpOrbs, nOrbs_W] = C_skIai.shape();
-      auto nkpts_ibz = sGG_tskij.shape()[2];
       nda::array<ComplexType, 2> P_ij(nOrbs_W, nOrbs_W);
       nda::array<ComplexType, 2> P_ij_reg(nOrbs_W, nOrbs_W);
       nda::array<ComplexType, 2> G_tmp(nOrbs_W, nOrbs_W);
@@ -429,15 +387,23 @@ namespace solvers {
         size_t is = skI / (nkpts_ibz * nImps); // skI = is * nkpts_ibz*nImps + ik * nImps + imp
         size_t ik = (skI / nImps) % nkpts_ibz;
         size_t imp = skI % nImps;
+        auto const& sel = selections[imp];
 
-        nda::blas::gemm(ComplexType(1.0), nda::dagger(C_skIai(is,ik,imp,nda::ellipsis{})),
-                        C_skIai(is,ik,imp,nda::ellipsis{}),
-                        ComplexType(0.0), P_ij);
-
-        auto indices = find_largest_indices(P_ij, nImpOrbs);
         P_ij_reg() = 0.0;
-        for (int i=0; i<indices.size(); ++i)
-          P_ij_reg(indices[i], nda::range::all) = P_ij(indices[i], nda::range::all);
+        if (scheme == 1) {
+          for (long a = 0; a < nImpOrbs; ++a) {
+            long i = sel.bands_ski(is, ik, a) - sel.band_offset;
+            P_ij_reg(i, i) = ComplexType(1.0);
+          }
+        } else {
+          nda::blas::gemm(ComplexType(1.0), nda::dagger(C_skIai(is,ik,imp,nda::ellipsis{})),
+                          C_skIai(is,ik,imp,nda::ellipsis{}),
+                          ComplexType(0.0), P_ij);
+          for (long a = 0; a < nImpOrbs; ++a) {
+            long i = sel.bands_ski(is, ik, a) - sel.band_offset;
+            P_ij_reg(i, nda::range::all) = P_ij(i, nda::range::all);
+          }
+        }
 
         size_t nts = G_tskij.shape(0);
         for (size_t it=0; it<nts; ++it) {
@@ -450,7 +416,7 @@ namespace solvers {
       sGG_tskij.win().fence();
 
     } else
-      utils::check(false, "embed_eri_t::eval_Pi_active: invalid scheme = {} for polarizability in the active space.", scheme);
+      utils::check(false, "scr_coulomb_t::eval_Pi_rpa_active: invalid scheme = {} for polarizability in the active space.", scheme);
     mpi->comm.barrier();
 
     return eval_Pi_rpa_Rspace(sGG_tskij.local(), thc);

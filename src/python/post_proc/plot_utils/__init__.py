@@ -19,5 +19,6 @@ limitations under the License.
 """
 
 from .dispersion_plot import band_plot, spectral_plot
+from .wannier_weight_plot import wannier_weight_plot, wannier_weights_on_kpath
 
-__all__ = ["band_plot", "spectral_plot"]
+__all__ = ["band_plot", "spectral_plot", "wannier_weight_plot", "wannier_weights_on_kpath"]

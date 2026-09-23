@@ -31,7 +31,7 @@ from .post_proc import (
   aaa_adapol_imag,
   minipole,
 )
-from .plot_utils import band_plot, spectral_plot
+from .plot_utils import band_plot, spectral_plot, wannier_weight_plot, wannier_weights_on_kpath
 
 _TRIQS_AVAILABLE = False
 _TRIQS_IMPORT_ERROR = None

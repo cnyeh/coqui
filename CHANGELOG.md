@@ -11,11 +11,13 @@
 
 - Imaginary-time and Matsubara meshes to h5 checkpoint, written by both the C++ and the Python IAFT. (#51)
 - `CPPDLR` CMake variable to configure against a local cppdlr source tree instead of the one fetched by `FetchContent`. (#51)
+- `coqui.post_proc.wannier_weight_plot` and `wannier_weights_on_kpath`: Wannier-interpolated bands along the k-path coloured by the weight of a chosen set of Wannier orbitals, from the `H_skab` written by `band_interpolation`.
 
 ### Improved
 
 - More stable DLR mesh construction: `cppdlr` pin bumped from `f6bd6ab` to `7a0f60c`. (#51)
 - IAFT mesh compatibility checking when reading a checkpoint. (#51)
+- `downfold_2e` with `screen_type = "crpa_ks"` or `"crpa_vasp"` now reports the bands selected for the active-space polarization at each k-point, their Wannier weights, the selection margin, and warns when the ranking is nearly tied; ties are broken deterministically toward the lower band index.
 
 ### Default Value Updates
 
