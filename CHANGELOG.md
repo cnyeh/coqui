@@ -14,10 +14,16 @@
 - `CPPDLR` CMake variable to configure against a local cppdlr source tree instead of the one fetched by `FetchContent`. (#51)
 - Linearized quasiparticle self-consistent GW (LQSGW), `run_lqsgw` in the Python API.
 - Linearized quasiparticle approximation of a Dyson-SCF solution as post-processing.
-- CT-SEG configuration reuse in GW+EDMFT
+- CT-SEG configuration reuse across GW+EDMFT iterations (`reuse_config`).
+- `solver.mu_search` table: separate solver parameters for the impurity chemical-potential search.
+- TRIQS/CT-INT as the impurity solver of GW+EDMFT (`solver.type = "ctint"`; density-density interactions).
+- TRIQS/CT-HYB as the impurity solver of GW+EDMFT (`solver.type = "cthyb"`; density-density, Kanamori or full interactions; off-diagonal hybridization inside a block).
+- Impurity-solver diagnostics stored in the DMFT checkpoint.
 
 ### Improved
 
+- Impurity-solver interface refactoring in the DMFT module.
+- The GW+EDMFT log reports each impurity solver's settings and every approximation made to the impurity problem.
 - More stable DLR mesh construction: `cppdlr` pin bumped from `f6bd6ab` to `7a0f60c`. (#51)
 - IAFT mesh compatibility checking when reading a checkpoint. (#51)
 - Convergence logic of the quasiparticle self-consistent loops (`qphf`, `evgw`, `qpgw`, `lqsgw`). 
@@ -27,6 +33,10 @@
 - One input interface for every quasiparticle approximation: `qp_approx` selects the scheme (`"qp_eqn"` or `"lqp"`, replacing `qp_type`), and each scheme reads its controls from its own nested block, `qp_eqn` or `lqp`, instead of flat keys.
 - The flat quasiparticle-equation keys of `evgw`, `qpgw`, `downfold_1e`, `gw_downfold` and `band_interpolation` move into the `qp_eqn` block: `ac_alg` → `qp_eqn.ac_alg`, `Nfit`/`qp_Nfit` → `qp_eqn.ac_nfit`, `eta`/`qp_eta` → `qp_eqn.eta`, `off_diag_mode` → `qp_eqn.off_diag_mode`, `qp_tol` → `qp_eqn.tol`. 
 - `band_plot` no longer draws the legend: call `ax.legend()` after plotting.
+- `edmft.impurity` takes its solver parameters in a nested `solver` table with a `type`; a flat CT-SEG block is still read, with a warning.
+- The solver keys of `edmft.impurity.chemical_potential` move into `solver.mu_search`; the former layout is converted with a warning.
+- Solver-native result objects move to `impurity_{i}/solver_results/` in the DMFT checkpoint.
+- removed legacy `inner_loop_alg` parameter in `run_gw_edmft`.
 
 ### Fixed
 
@@ -35,11 +45,9 @@
 - Wannier90 output files from `wannier90` library mode silently written to a truncated path outside `outdir` when `outdir/prefix` exceeds 50 characters; library mode now aborts instead.
 - DMFT unit test `test_extract_h0_and_delta_with_real_downfold_gloc` failing with more than one MPI rank.
 - MPI parallelization of `pw2coqui.x`. (issue #11)
-
-### Fixed
-
-- `solve_impurities_from_chkpt(dmft_iteration=-1, save_results=True)` wrote its results to a new iteration `final_iter + 1` instead of the re-solved one.
-- `solve_impurities_from_chkpt(imp_indices=...)` solved and saved each selected impurity with the parameters and checkpoint group of the impurity at the same list position.
+- Output h5 structure of `solve_impurities_from_chkpt` for a re-solved iteration.
+- Impurity selection with `imp_indices` in `solve_impurities_from_chkpt`.
+- Random seed bug in CT-SEG when `random_seed` is provided explicitly.
 
 ### Default Value Updates
 
