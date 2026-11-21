@@ -86,7 +86,7 @@ def resolve_tau_grids(*, beta, dlr_wmax, n_tau=None, n_tau_bosonic=None, n_tau_m
 
 # ---------------------------------------------------------------- alpha
 
-def signed_alpha(h_int, d0_channels, center, delta):
+def signed_alpha(h_int, d0_channels, center, delta, gf_struct=None):
   """
   The alpha tensor of a density-density interaction in ``triqs_ctint``'s layout.
 
@@ -106,8 +106,10 @@ def signed_alpha(h_int, d0_channels, center, delta):
       Density-density terms ``coef n_a n_b`` only (``c+_a c+_b c_b c_a``); anything else raises.
   d0_channels : list of np.ndarray
       ``D(tau)`` of every ``D0`` channel, in the order of ``d0_channel_colors``.
-  center, delta : float
-      Centre and half-width of the shifts.
+  center, delta : float or array (n_color,)
+      Centre and half-width of the shifts, one value for every colour or one per colour (then
+      ``gf_struct`` is required to find the colour of each operator).
+  gf_struct : list of (str, int), optional
 
   Returns
   -------
@@ -117,19 +119,41 @@ def signed_alpha(h_int, d0_channels, center, delta):
   Raises
   ------
   ValueError
-      A non-density-density term of ``h_int``.
+      A non-density-density term of ``h_int``; per-colour shifts without ``gf_struct``.
   """
+  per_color = np.ndim(center) > 0 or np.ndim(delta) > 0
+  if per_color and gf_struct is None:
+    raise ValueError("ctint_utils::signed_alpha: per-colour centres or deltas need gf_struct")
+  if per_color:
+    offs = block_offsets(gf_struct)
+    n_color = sum(size for _, size in gf_struct)
+    center = np.broadcast_to(np.asarray(center, dtype=float), (n_color,))
+    delta = np.broadcast_to(np.asarray(delta, dtype=float), (n_color,))
+    colour_of = {(name, i): offs[b] + i for b, (name, size) in enumerate(gf_struct) for i in range(size)}
+    pairs = d0_channel_colors(gf_struct)
+  else:
+    center, delta = float(center), float(delta)
+
+  def shifts(operator_index, channel):
+    """(centre, delta) of a vertex operator: by colour when per colour, the scalars otherwise."""
+    if not per_color:
+      return center, delta
+    col = colour_of[operator_index] if channel is None else pairs[channel][operator_index]
+    return float(center[col]), float(delta[col])
+
   terms = list(h_int)
   for monomial, _ in terms:
     (_, (b0, i0)), (_, (b1, i1)), (_, (b1p, i1p)), (_, (b0p, i0p)) = monomial
     if (b0, i0) != (b0p, i0p) or (b1, i1) != (b1p, i1p):
       raise ValueError(f"ctint_utils::signed_alpha: density-density terms only; h_int has {monomial}")
   alpha = np.zeros((len(terms) + len(d0_channels), 2, 2, 2))
-  center, delta = float(center), float(delta)
   for s, sgn in enumerate((1.0, -1.0)):
-    for l, (_, coef) in enumerate(terms):
-      alpha[l, 0, 0, s] = center - np.sign(np.real(coef)) * sgn * delta
-      alpha[l, 1, 1, s] = center + sgn * delta
+    for l, (monomial, coef) in enumerate(terms):
+      (_, (b0, i0)), (_, (b1, i1)), _, _ = monomial
+      c0, d0 = shifts((str(b0), int(i0)), None)
+      c1, d1 = shifts((str(b1), int(i1)), None)
+      alpha[l, 0, 0, s] = c0 - np.sign(np.real(coef)) * sgn * d0
+      alpha[l, 1, 1, s] = c1 + sgn * d1
     for d, channel in enumerate(d0_channels):
       channel = np.asarray(channel, dtype=float)
       scale = np.abs(channel).max()
@@ -142,9 +166,84 @@ def signed_alpha(h_int, d0_channels, center, delta):
           app_log(1, f" [WARNING] D(tau) channel {d} changes sign (opposite-sign part {excursion:.2e}\n"
                      f"  vs max |D| {scale:.2e}); no single shift direction fits, the dominant part's is\n"
                      f"  used (exact; the Monte Carlo sign may suffer)\n")
-      alpha[len(terms) + d, 0, 0, s] = center - sign * sgn * delta
-      alpha[len(terms) + d, 1, 1, s] = center + sgn * delta
+      ca, da = shifts(0, d)
+      cb, db = shifts(1, d)
+      alpha[len(terms) + d, 0, 0, s] = ca - sign * sgn * da
+      alpha[len(terms) + d, 1, 1, s] = cb + sgn * db
   return alpha
+
+
+def problem_occupations(problem):
+  """
+  The occupation of every colour of ``problem.gf_struct`` from ``problem.occupations_sab`` (the
+  lattice occupations the workflow carries), averaged over the degenerate blocks as the solution
+  is symmetrized over them.
+
+  Returns
+  -------
+  np.ndarray (n_color,)
+  """
+  gf_struct = problem.gf_struct
+  _, _, spin, orb = color_table(gf_struct)
+  occ = np.array([float(np.real(problem.occupations_sab[s, o, o])) for s, o in zip(spin, orb)])
+  offs = block_offsets(gf_struct)
+  for group in problem.degenerate_blk or []:
+    blocks = [int(b) for b in group]
+    for inner in range(gf_struct[blocks[0]][1]):           # position by position over the group's blocks
+      idx = [offs[b] + inner for b in blocks]
+      occ[idx] = occ[idx].mean()
+  return occ
+
+
+def auto_alpha(occ, delta, edge, default_center=0.5, default_delta=0.51):
+  """
+  The occupation-based shifts: a colour whose occupation lies within ``edge`` of 0 or 1 gets the
+  shifts ``n +- delta`` centred on its occupation, which keeps the expansion order near 1 and the
+  sign near 1 for an almost empty or full orbital; every other colour keeps the default shifts
+  ``default_center +- default_delta``, because bracketing an occupation away from the edges puts
+  the shifts inside (0, 1), where the sign collapses.
+
+  Parameters
+  ----------
+  occ : array (n_color,)
+      The occupation of every colour (``problem_occupations``).
+  delta : float
+      Half-width of the occupation-centred shifts.
+  edge : float
+      Distance from 0 or 1 within which a colour is occupation-centred.
+
+  Returns
+  -------
+  centers, deltas : np.ndarray (n_color,)
+  is_occ : np.ndarray (n_color,) of bool
+      ``True`` for the occupation-centred colours.
+  """
+  occ = np.asarray(occ, dtype=float)
+  is_occ = (occ <= float(edge)) | (occ >= 1.0 - float(edge))
+  centers = np.where(is_occ, occ, float(default_center))
+  deltas = np.where(is_occ, float(delta), float(default_delta))
+  return centers, deltas, is_occ
+
+
+def alpha_bracket_check(occ_measured, centers, deltas, is_occ, sign, min_sign):
+  """
+  Whether the occupation-centred shifts were adequate: every occupation-centred colour's measured
+  occupation lies inside its bracket ``|n - c| < delta`` (outside it the sign collapses and the
+  result is unreliable) and the average sign is at least ``min_sign``.
+
+  Returns
+  -------
+  dict
+      ``ok``, ``max_offset`` (largest ``|n - c|`` over the occupation-centred colours, 0 without
+      any) and ``violations`` (their colour indices).
+  """
+  occ_measured, centers, deltas = (np.asarray(x, dtype=float) for x in (occ_measured, centers, deltas))
+  is_occ = np.asarray(is_occ, dtype=bool)
+  offsets = np.abs(occ_measured - centers)
+  violations = [int(i) for i in np.flatnonzero(is_occ & (offsets >= deltas))]
+  max_offset = float(offsets[is_occ].max()) if is_occ.any() else 0.0
+  return {"ok": bool(not violations and float(sign) >= float(min_sign)), "max_offset": max_offset,
+          "violations": violations}
 
 
 # ---------------------------------------------------------------- G from M(tau)

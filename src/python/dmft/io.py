@@ -133,6 +133,7 @@ def convert_gw_edmft_params(gw_edmft_params: dict):
           "iter_alg": {"alg": "damping", "mixing": 0.4, "edmft_mixing": 0.2},
           "edmft": {
             "chkpt_h5": "./svo.dmft.h5",
+            "iaft": {"wmax": 10, "eps": 1e-10},     # DLR mesh of the impurity problem (optional)
             "impurity": {
               "init_imp_results": "dc",
               "solver": {
@@ -180,9 +181,11 @@ def convert_gw_edmft_params(gw_edmft_params: dict):
           }
         }
 
-    - ``gw`` is absent when ``gw_iter_per_loop == 0``. A top-level ``iaft`` lands in ``edmft``
-      (it is the impurity mesh); ``edmft.impurity`` is always a list, one block per impurity;
-      every other key of ``edmft`` and of the top level is copied through unchanged.
+    - ``gw`` is absent when ``gw_iter_per_loop == 0``. ``edmft.iaft`` is the DLR mesh of the impurity
+      problem and is copied through; a top-level ``iaft`` would describe the crystal mesh, which the
+      workflow reads from the GW checkpoint, so it is dropped with a warning; ``edmft.impurity`` is
+      always a list, one block per impurity; every other key of ``edmft`` and of the top level is
+      copied through unchanged.
     
     - With ``edmft_iter_per_loop == 0`` and ``gw_iter_per_loop == 1``, ``niter`` and
       ``gw_iter_per_loop`` are swapped so that the GW-only run still writes the ``embed`` data.
@@ -281,9 +284,12 @@ def convert_gw_edmft_params(gw_edmft_params: dict):
         'chkpt_h5': edmft_section.pop('chkpt_h5', outdir+"/"+prefix+".mbpt.h5")
     }
 
-    # a top-level 'iaft' is the impurity mesh, so it belongs to the EDMFT section
+    # a top-level 'iaft' describes the crystal (GW-level) mesh, which the workflow reads from the GW
+    # checkpoint; the mesh of the impurity problem is 'edmft.iaft'
     if 'iaft' in gw_edmft_group:
-        gw_edmft_params['edmft']['iaft'] = gw_edmft_group.pop('iaft')
+        gw_edmft_group.pop('iaft')
+        app_log(1, " [WARNING] the top-level 'iaft' table is ignored: the GW-level mesh is read from the\n"
+                   "  GW checkpoint. The DLR mesh of the impurity problem is 'edmft.iaft'.\n")
 
     # One block per impurity (a single dict is one impurity), in the nested layout
     if 'impurity' in edmft_section:

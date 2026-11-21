@@ -34,16 +34,17 @@ from coqui.dmft.ctint import ctint_utils as cu
 
 # keys of the author's benchmark runner that this version does not implement: rejected by name so a
 # block written for the runner fails loudly instead of being forwarded to triqs_ctint
-_NOT_IMPLEMENTED_KEYS = ("alpha_mode", "alpha_edge", "alpha_recenter", "alpha_min_sign",
-                         "alpha_delta_offdiag", "alpha_cross", "alpha_delta_cross", "alpha_center_from",
-                         "measure_chi", "chi_connected", "reuse_config", "restart_n_warmup_cycles")
+_NOT_IMPLEMENTED_KEYS = ("alpha_recenter", "alpha_delta_offdiag", "alpha_cross", "alpha_delta_cross",
+                         "alpha_center_from", "measure_chi", "chi_connected", "reuse_config",
+                         "restart_n_warmup_cycles")
+_ALPHA_MODES = ("signed", "auto")
 
 
 def _mesh_indices(mesh):
   return np.array([w.index for w in mesh], dtype=np.int64)
 
 
-def _solve_ctint(inputs, problem, params, *, occupations_only, alpha_center, alpha_delta, n_tau,
+def _solve_ctint(inputs, problem, params, *, occupations_only, alpha_centers, alpha_deltas, n_tau,
                  n_tau_bosonic, n_tau_chi2):
   """
   One TRIQS/ctint solve of the converted problem.
@@ -63,7 +64,7 @@ def _solve_ctint(inputs, problem, params, *, occupations_only, alpha_center, alp
       ``Solver.solve``.
   occupations_only : bool
       ``measure_M_tau=False``, ``post_process=False``, no ``chiAB``.
-  alpha_center, alpha_delta : float
+  alpha_centers, alpha_deltas : array (n_color,)
   n_tau, n_tau_bosonic, n_tau_chi2 : int
 
   Returns
@@ -99,9 +100,9 @@ def _solve_ctint(inputs, problem, params, *, occupations_only, alpha_center, alp
   # the alpha tensor: one shift pair per h_int term and per D0 channel
   d_tau = cu.d0_tau_colors(S.D0_iw, gf_struct, int(n_tau_bosonic))
   channels = [d_tau[:, ca, cb] for ca, cb in cu.d0_channel_colors(gf_struct)]
-  alpha = cu.signed_alpha(inputs.h_int, channels, center=alpha_center, delta=alpha_delta)
-  app_log(2, f"ctint signed alpha: centre {alpha_center}, delta {alpha_delta},\n"
-             f"  {len(list(inputs.h_int))} h_int vertices + {len(channels)} D0 channels")
+  alpha = cu.signed_alpha(inputs.h_int, channels, center=alpha_centers, delta=alpha_deltas,
+                          gf_struct=gf_struct)
+  app_log(2, f"ctint alpha tensor: {len(list(inputs.h_int))} h_int vertices + {len(channels)} D0 channels")
 
   solve_params = dict(params)
   # CoQuí-level keys that Solver.solve does not accept
@@ -130,13 +131,19 @@ class CtintSolver(ImpuritySolver):
 
   Solver-block keys: the QMC controls (``n_cycles`` total over ranks, ``n_warmup_cycles``,
   ``length_cycle``, ``random_seed``), ``screen_j`` (default False), ``n_tau_chi2`` (1001, the
-  tau points of the density-correlator measurement, which dominates the cost), ``mu_search``.
+  tau points of the density-correlator measurement, which dominates the cost), ``alpha_mode``
+  (``"signed"``: the shifts ``0.5 +- 0.51`` for every colour; ``"auto"``: a colour whose lattice
+  occupation, ``problem.occupations_sab``, lies within ``alpha_edge`` (0.05) of 0 or 1 gets the
+  narrow shifts ``n +- alpha_bracket`` (0.02) centred on it, which keeps the expansion order and
+  the sign near 1 for an almost empty or full orbital, the others keep the default shifts; after
+  the solve the measured occupation of every centred colour must lie inside its bracket and the
+  sign be at least ``alpha_min_sign`` (0.9), else a warning), ``mu_search``.
   The tau grids of ``G0`` and ``D0`` follow the impurity DLR mesh, ``max(10001, 2 beta wmax + 1)``
-  points; the signed alpha shifts are ``0.5 +- 0.51`` and the measured ``M(tau)`` is DLR-fitted at
-  ``1e-6`` up to the DLR ``wmax``. These may be overridden by name (``n_tau``, ``n_tau_bosonic``,
-  ``alpha_center``, ``alpha_delta``, ``m_fit_eps``, ``m_fit_wmax``); ``h_int`` accepts
-  ``"density"`` only; every other key is forwarded to ``triqs_ctint.Solver.solve``. The
-  alpha-mode, chi and configuration-reuse keys of a fuller CT-INT setup are rejected by name.
+  points; the measured ``M(tau)`` is DLR-fitted at ``1e-6`` up to the DLR ``wmax``. These may be
+  overridden by name (``n_tau``, ``n_tau_bosonic``, ``alpha_center``, ``alpha_delta``,
+  ``m_fit_eps``, ``m_fit_wmax``); ``h_int`` accepts ``"density"`` only; every other key is
+  forwarded to ``triqs_ctint.Solver.solve``. The off-diagonal alpha, chi and configuration-reuse
+  keys of a fuller CT-INT setup are rejected by name.
   """
   name = "ctint"
   capabilities = SolverCapabilities(
@@ -156,8 +163,15 @@ class CtintSolver(ImpuritySolver):
       raise ValueError(f"ctint_solver::CtintSolver: this version accepts h_int = \"density\" only "
                        f"(signed alpha), got {self.h_int_kind!r}")
     self.screen_j = bool(params.pop('screen_j', False))
+    self.alpha_mode = str(params.pop('alpha_mode', 'signed'))
+    if self.alpha_mode not in _ALPHA_MODES:
+      raise ValueError(f"ctint_solver::CtintSolver: alpha_mode must be one of {_ALPHA_MODES}, got "
+                       f"{self.alpha_mode!r}")
     self.alpha_center = float(params.pop('alpha_center', 0.5))
     self.alpha_delta = float(params.pop('alpha_delta', 0.51))
+    self.alpha_edge = float(params.pop('alpha_edge', 0.05))
+    self.alpha_bracket = float(params.pop('alpha_bracket', 0.02))
+    self.alpha_min_sign = float(params.pop('alpha_min_sign', 0.9))
     self.n_tau_override = params.pop('n_tau', None)                   # None: from the DLR mesh
     self.n_tau_bosonic_override = params.pop('n_tau_bosonic', None)
     self.n_tau_chi2 = int(params.pop('n_tau_chi2', 1001))
@@ -177,8 +191,11 @@ class CtintSolver(ImpuritySolver):
              f"{caps.general_h_int}, off-diagonal Delta {caps.offdiag_delta},\n"
              f"    complex Hamiltonian {caps.complex_hamiltonian}, retarded interaction "
              f"{caps.retarded_interaction}, polarization {caps.polarization}",
-             f"  signed alpha: centre {self.alpha_center}, delta {self.alpha_delta}; tau grids from the "
-             f"DLR mesh"
+             f"  alpha_mode {self.alpha_mode}: default shifts {self.alpha_center} +- {self.alpha_delta}"
+             + (f", occupation-centred +- {self.alpha_bracket} within {self.alpha_edge} of 0 or 1, "
+                f"min sign {self.alpha_min_sign}"
+                if self.alpha_mode == "auto" else "")
+             + "; tau grids from the DLR mesh"
              + "".join(f", {name} {value}" for name, value in (("n_tau", self.n_tau_override),
                                                               ("n_tau_bosonic", self.n_tau_bosonic_override))
                        if value is not None)
@@ -202,8 +219,11 @@ class CtintSolver(ImpuritySolver):
 
     1. Convert the problem with ``problem_to_triqs`` (density-density, real, blocks as given).
     2. Reject blocks of unequal size (CT-INT's ``D0`` labels assume one size).
-    3. Run the TRIQS solve (``_solve_ctint``): ``G0 = (iw - h0 - Delta)^-1``, ``D0 = D/2``, the
-       signed alpha, the density and (production) ``M(tau)`` and ``chiAB`` measurements.
+    3. Resolve the alpha shifts per colour (``alpha_mode``: the default shifts, or
+       ``auto_alpha`` on the problem's lattice occupations) and run the TRIQS solve
+       (``_solve_ctint``): ``G0 = (iw - h0 - Delta)^-1``, ``D0 = D/2``, the signed alpha, the
+       density and (production) ``M(tau)`` and ``chiAB`` measurements; with ``"auto"`` the measured
+       occupations are checked against the brackets (``alpha_bracket_check``), warning on failure.
     4. Production: the backend's post-processing (``ctint_utils``): occupations from the density
        matrices; Hartree-Fock ``Sigma_infty`` with the D(0) Hartree term; G from the own DLR fit of
        ``M(tau)`` at the IAFT points, averaged over the degenerate blocks; ``Sigma = G0^-1 - G^-1``;
@@ -232,18 +252,44 @@ class CtintSolver(ImpuritySolver):
       n_tau_bosonic=self.n_tau_bosonic_override)
     app_log(2, f"ctint tau grids from the DLR mesh: n_tau = {n_tau}, n_tau_bosonic = {n_tau_bosonic}, "
                f"n_tau_chi2 = {self.n_tau_chi2}")
+    n_color = sum(size for _, size in gf_struct)
+    if self.alpha_mode == "auto":
+      occ_in = cu.problem_occupations(problem)
+      centers, deltas, is_occ = cu.auto_alpha(occ_in, self.alpha_bracket, self.alpha_edge,
+                                              default_center=self.alpha_center, default_delta=self.alpha_delta)
+      app_log(2, f"ctint alpha_mode auto: {int(is_occ.sum())} of {n_color} colours occupation-centred, n +- "
+                 f"{self.alpha_bracket}\n  (lattice occupations {np.round(occ_in, 4).tolist()}, within "
+                 f"{self.alpha_edge} of 0 or 1),\n  the others at {self.alpha_center} +- {self.alpha_delta}")
+    else:
+      centers = np.full(n_color, self.alpha_center)
+      deltas = np.full(n_color, self.alpha_delta)
+      is_occ = np.zeros(n_color, dtype=bool)
     S = _solve_ctint(inputs, problem, params, occupations_only=occupations_only,
-                     alpha_center=self.alpha_center, alpha_delta=self.alpha_delta, n_tau=n_tau,
+                     alpha_centers=centers, alpha_deltas=deltas, n_tau=n_tau,
                      n_tau_bosonic=n_tau_bosonic, n_tau_chi2=self.n_tau_chi2)
     rho = [0.5 * (np.asarray(S.density[b], dtype=complex) + np.asarray(S.density[b], dtype=complex).conj().T)
            for b in range(len(gf_struct))]
     occupations = {name: np.diag(rho[b]).real.copy() for b, (name, _) in enumerate(gf_struct)}
     dens_c = np.concatenate([np.diag(r).real for r in rho])
     sign = float(np.real(S.average_sign))
-    diagnostics = {"average_sign": sign, "average_order": float(S.average_k)}
+    diagnostics = {"average_sign": sign, "average_order": float(S.average_k),
+                   "alpha_centers": centers.astype(float), "alpha_deltas": deltas.astype(float),
+                   "alpha_occupation_centered": is_occ.astype(np.int64)}
     if abs(sign) < 0.1:
       app_log(1, f" [WARNING] average sign {sign:.3f} < 0.1; the CT-INT results are unreliable\n"
                  f"  (try a larger alpha_delta, or a smaller problem)\n")
+    if self.alpha_mode == "auto":
+      check = cu.alpha_bracket_check(dens_c, centers, deltas, is_occ, sign, self.alpha_min_sign)
+      diagnostics.update({"alpha_check_ok": int(check["ok"]), "alpha_max_offset": check["max_offset"]})
+      if check["ok"]:
+        app_log(2, f"ctint alpha check: max |n - centre| {check['max_offset']:.4f} inside the brackets, "
+                   f"sign {sign:.3f}")
+      else:
+        app_log(1, f" [WARNING] the occupation-centred alpha shifts did not hold: colours {check['violations']}\n"
+                   f"  measured outside their bracket (max |n - centre| {check['max_offset']:.4f}) or sign\n"
+                   f"  {sign:.3f} below {self.alpha_min_sign}; the result is unreliable. The lattice occupations\n"
+                   f"  the shifts were centred on differ from the impurity's; a larger alpha_bracket or\n"
+                   f"  alpha_mode = \"signed\" avoids this.\n")
     if occupations_only:
       return ImpurityResult(orbital_occupations=occupations, density=float(dens_c.sum()),
                             diagnostics=diagnostics)

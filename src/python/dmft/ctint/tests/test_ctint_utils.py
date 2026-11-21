@@ -11,7 +11,10 @@ pytest.importorskip("triqs", reason="triqs is required for dmft tests")
 
 from triqs.gfs import Gf, BlockGf, MeshImTime, MeshDLRImFreq
 from triqs.operators import n
-from coqui.dmft.ctint.ctint_utils import d0_channel_colors, signed_alpha, g_from_m_tau, resolve_tau_grids
+from coqui.dmft.ctint.ctint_utils import (d0_channel_colors, signed_alpha, g_from_m_tau, resolve_tau_grids,
+                                          auto_alpha, alpha_bracket_check, problem_occupations)
+from coqui.dmft.solver_api import ImpurityProblem
+from coqui.utils.imag_axes_ft import IAFT
 
 _GF2 = [("up_0", 1), ("up_1", 1), ("down_0", 1), ("down_1", 1)]     # two orbitals, size-1 blocks
 
@@ -54,6 +57,12 @@ def test_signed_alpha():
        (opposite directions) although its mean is negative; a warning, not an error. A channel that
        is numerically zero counts as attractive.
     3. A non-density-density term (c+_up0 c+_dn0 c_dn1 c_up1) raises ValueError.
+    4. Per-colour shifts, centres [0.1, 0.5, 0.9, 0.5] and deltas [0.02, 0.51, 0.02, 0.51] with
+       gf_struct: every vertex operator takes the centre and delta of its own colour (pair 0 is
+       the first creation operator of the normal-ordered monomial, opposite direction for a
+       repulsive coefficient; the D0 channel of colours (0, 2) at 0.1 and 0.9 +- 0.02), the
+       s-average of every entry is its colour's centre; per-colour arrays without gf_struct raise
+       ValueError.
   """
   pairs = d0_channel_colors(_GF2)
   h_int = (2.0 * n("up_0", 0) * n("down_0", 0) + 3.0 * n("up_1", 0) * n("down_1", 0)
@@ -88,6 +97,26 @@ def test_signed_alpha():
   with pytest.raises(ValueError, match="density-density"):
     signed_alpha(h_int=c_dag("up_0", 0) * c_dag("down_0", 0) * c("down_1", 0) * c("up_1", 0),
                  d0_channels=channels, center=0.5, delta=0.51)
+
+  centers = np.array([0.1, 0.5, 0.9, 0.5])
+  deltas = np.array([0.02, 0.51, 0.02, 0.51])
+  alpha_pc = signed_alpha(h_int=h_int, d0_channels=channels, center=centers, delta=deltas, gf_struct=_GF2)
+  cols = {name: k for k, (name, _) in enumerate(_GF2)}
+  channel = pairs.index((0, 2))
+  for s_, sgn in enumerate((1.0, -1.0)):
+    assert np.isclose(alpha_pc[3 + channel, 0, 0, s_], 0.1 + sgn * 0.02)   # attractive D0: same direction
+    assert np.isclose(alpha_pc[3 + channel, 1, 1, s_], 0.9 + sgn * 0.02)
+    for l, (m, coef) in enumerate(h_int):
+      (_, (b0, _i0)), (_, (b1, _i1)), _, _ = m                              # pair 0 is c+_b0 ... c_b0
+      direction = -np.sign(np.real(coef)) * sgn
+      assert np.isclose(alpha_pc[l, 0, 0, s_], centers[cols[b0]] + direction * deltas[cols[b0]])
+      assert np.isclose(alpha_pc[l, 1, 1, s_], centers[cols[b1]] + sgn * deltas[cols[b1]])
+  for l, (m, _) in enumerate(h_int):
+    (_, (b0, _i0)), (_, (b1, _i1)), _, _ = m
+    assert np.isclose(alpha_pc[l].mean(axis=-1)[0, 0], centers[cols[b0]])
+    assert np.isclose(alpha_pc[l].mean(axis=-1)[1, 1], centers[cols[b1]])
+  with pytest.raises(ValueError, match="gf_struct"):
+    signed_alpha(h_int=h_int, d0_channels=channels, center=centers, delta=deltas)
 
 
 def test_resolve_tau_grids():
@@ -151,3 +180,79 @@ def test_g_from_m_tau():
                   G0_shift_iw=G0_shift_iw)
   got = g_from_m_tau(S=solver, gf_struct=gf_struct, n_f=n_f, beta=beta, w_max=5.0, eps=1e-10)
   assert np.allclose(got[0][:, 0, 0], g0 + g0 * (1.0 / (iw - 0.5)) * g0, atol=1e-8)
+
+
+def test_auto_alpha():
+  """auto_alpha centres the shifts on the occupation of a colour near 0 or 1 and leaves the default
+  shifts for the others.
+
+  Setup: occupations [0.03, 0.5, 0.97, 0.2], delta 0.02, edge 0.05, defaults 0.5 +- 0.51.
+
+  Cases:
+    1. centers [0.03, 0.5, 0.97, 0.5], deltas [0.02, 0.51, 0.02, 0.51], is_occ [T, F, T, F]
+       (0.2 is away from both edges, so it keeps the default shifts).
+    2. edge 0.25: the colour at 0.2 is centred too (is_occ [T, F, T, T]); a colour exactly at the
+       edge counts as near (0.05 with edge 0.05).
+  """
+  occ = np.array([0.03, 0.5, 0.97, 0.2])
+  centers, deltas, is_occ = auto_alpha(occ=occ, delta=0.02, edge=0.05, default_center=0.5, default_delta=0.51)
+  assert np.allclose(centers, [0.03, 0.5, 0.97, 0.5]) and np.allclose(deltas, [0.02, 0.51, 0.02, 0.51])
+  assert is_occ.tolist() == [True, False, True, False]
+  _, _, is_occ_wide = auto_alpha(occ=occ, delta=0.02, edge=0.25, default_center=0.5, default_delta=0.51)
+  assert is_occ_wide.tolist() == [True, False, True, True]
+  _, _, at_edge = auto_alpha(occ=np.array([0.05]), delta=0.02, edge=0.05, default_center=0.5, default_delta=0.51)
+  assert at_edge.tolist() == [True]
+
+
+def test_alpha_bracket_check():
+  """alpha_bracket_check passes only when every occupation-centred colour's measured occupation lies
+  inside its bracket and the sign reaches the minimum.
+
+  Setup: centres [0.03, 0.5, 0.97], deltas [0.02, 0.51, 0.02], is_occ [T, F, T].
+
+  Cases:
+    1. Measured [0.04, 0.9, 0.96], sign 0.95, min 0.9: ok, max_offset 0.01, no violations (the
+       default colour is off its centre by 0.4 but is not checked).
+    2. Measured [0.06, 0.5, 0.96], sign 0.95: colour 0 outside (offset 0.03 >= 0.02), not ok.
+    3. Measured as in 1, sign 0.8: not ok on the sign alone, no violations.
+  """
+  centers, deltas, is_occ = np.array([0.03, 0.5, 0.97]), np.array([0.02, 0.51, 0.02]), np.array([True, False, True])
+  ok = alpha_bracket_check(occ_measured=np.array([0.04, 0.9, 0.96]), centers=centers, deltas=deltas, is_occ=is_occ,
+                           sign=0.95, min_sign=0.9)
+  assert ok["ok"] and np.isclose(ok["max_offset"], 0.01) and ok["violations"] == []
+  out = alpha_bracket_check(occ_measured=np.array([0.06, 0.5, 0.96]), centers=centers, deltas=deltas, is_occ=is_occ,
+                            sign=0.95, min_sign=0.9)
+  assert not out["ok"] and out["violations"] == [0] and np.isclose(out["max_offset"], 0.03)
+  low = alpha_bracket_check(occ_measured=np.array([0.04, 0.9, 0.96]), centers=centers, deltas=deltas, is_occ=is_occ,
+                            sign=0.8, min_sign=0.9)
+  assert not low["ok"] and low["violations"] == []
+
+
+def test_problem_occupations():
+  """problem_occupations reads the occupation of every colour off occupations_sab in gf_struct colour
+  order and averages it over the degenerate blocks.
+
+  Setup: gf_struct [("up_0", 2), ("down_0", 2)] (colours (0 up), (1 up), (0 dn), (1 dn)),
+  occupations_sab diagonal [0.1, 0.2] for up and [0.3, 0.4] for down, an ImpurityProblem with
+  zero arrays otherwise on a DLR IAFT (beta 10).
+
+  Cases:
+    1. degenerate_blk None: [0.1, 0.2, 0.3, 0.4].
+    2. degenerate_blk [[0, 1]]: the two blocks averaged position by position, [0.2, 0.3, 0.2, 0.3].
+  """
+  gf_struct = [("up_0", 2), ("down_0", 2)]
+  iaft = IAFT(beta=10.0, wmax=10.0, prec="custom", eps=1e-8, verbose=False, basis="dlr")
+  nw_f, nw_b = len(iaft.wn_mesh('f')), len(iaft.wn_mesh('b', positive_only=True))
+  occ = np.zeros((2, 2, 2))
+  occ[0] = np.diag([0.1, 0.2])
+  occ[1] = np.diag([0.3, 0.4])
+
+  def problem(groups):
+    return ImpurityProblem(gf_struct=gf_struct, beta=10.0, iaft=iaft, dlr_wmax=10.0, dlr_eps=1e-8,
+                           h0_sab=np.zeros((2, 2, 2), dtype=complex),
+                           delta_wsab=np.zeros((nw_f, 2, 2, 2), dtype=complex),
+                           v_abcd=np.zeros((2, 2, 2, 2), dtype=complex),
+                           u_weiss_wabcd=np.zeros((nw_b, 2, 2, 2, 2), dtype=complex), target_density=1.0,
+                           occupations_sab=occ, degenerate_blk=groups)
+  assert np.allclose(problem_occupations(problem(None)), [0.1, 0.2, 0.3, 0.4])
+  assert np.allclose(problem_occupations(problem([np.array([0, 1])])), [0.2, 0.3, 0.2, 0.3])

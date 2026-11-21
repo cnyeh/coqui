@@ -68,10 +68,11 @@ def test_ctint_solver_solve(dimer):
     3. A gf_struct with blocks of unequal size is rejected by solve with ValueError naming
        "equal size", before any solver is built (the problem is the dimer's arrays padded to
        three orbitals per spin in blocks of size 1 and 2; only the block check runs).
-    4. Construction: h_int "full" raises ValueError naming "density"; a benchmark-runner key this
-       version does not implement (alpha_mode) raises ValueError naming it, also when it sits
-       in the mu_search table (restart_n_warmup_cycles, a CT-SEG cycle control the search set
-       would otherwise forward to triqs_ctint and fail on at the first search solve);
+    4. Construction: h_int "full" raises ValueError naming "density"; an unknown alpha_mode
+       ("library") raises ValueError naming it; a key this backend does not implement raises
+       ValueError naming it also when it sits in the mu_search table (restart_n_warmup_cycles, a
+       CT-SEG cycle control the search set would otherwise forward to triqs_ctint and fail on at
+       the first search solve);
        make_solver({"type": "ctint", ...}) returns a CtintSolver with the cycle controls resolved.
   """
   params, iaft, ref, problem = dimer
@@ -112,7 +113,7 @@ def test_ctint_solver_solve(dimer):
   with pytest.raises(ValueError, match="density"):
     CtintSolver(dict(_SOLVER, h_int="full"), comm_size=1)
   with pytest.raises(ValueError, match="alpha_mode"):
-    CtintSolver(dict(_SOLVER, alpha_mode="auto"), comm_size=1)
+    CtintSolver(dict(_SOLVER, alpha_mode="library"), comm_size=1)
   with pytest.raises(ValueError, match="restart_n_warmup_cycles"):
     CtintSolver(dict(_SOLVER, mu_search={"restart_n_warmup_cycles": 100}), comm_size=1)
   made = make_solver({"type": "ctint", "n_cycles": 10, "n_warmup_cycles": 1, "length_cycle": 1}, comm_size=1)

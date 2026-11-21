@@ -57,6 +57,8 @@ gw_edmft_params = {
                 "n_warmup_cycles": 6000,
                 "length_cycle": 60,
                 "n_tau_chi2": 1001,            # tau points of the density correlator
+                "alpha_mode": "signed",        # "auto": shifts centred on the lattice occupation of an
+                                               # almost empty or full orbital (far lower expansion order)
                 "mu_search": {"n_cycles": 100000},
             },
         }],
